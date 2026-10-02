@@ -1,0 +1,40 @@
+{
+  "schema": "narrative-episode/0.1",
+  "fps": 30,
+  "durationFrames": 180,
+  "actors": [{ "id": "performer", "assetId": "user-vrm" }],
+  "shots": [{
+    "id": "synthetic-gesture",
+    "startFrame": 0,
+    "durationFrames": 180,
+    "camera": { "position": [0, 1.35, 3], "target": [0, 1.2, 0], "fov": 40 },
+    "performances": [{
+      "actorId": "performer",
+      "sequence": {
+        "duration": 6,
+        "keyframes": [
+          { "id": "rest", "time": 0, "pose": {}, "easing": "easeInOutQuad" },
+          { "id": "turn", "time": 1.5, "pose": {
+            "head": { "rotation": [0, 0.13052619222005157, 0, 0.9914448613738104] },
+            "rightUpperArm": { "rotation": [0, 0, -0.25881904510252074, 0.9659258262890683] }
+          }, "easing": "easeInOutQuad" },
+          { "id": "gesture", "time": 3, "pose": {
+            "head": { "rotation": [0, 0.13052619222005157, 0, 0.9914448613738104] },
+            "rightUpperArm": { "rotation": [0, 0, -0.25881904510252074, 0.9659258262890683] },
+            "rightLowerArm": { "rotation": [0, 0.3826834323650898, 0, 0.9238795325112867] }
+          }, "easing": "easeInOutQuad" },
+          { "id": "settle", "time": 4.5, "pose": {
+            "head": { "rotation": [0, -0.043619387365336, 0, 0.9990482215818578] }
+          }, "easing": "easeInOutQuad" },
+          { "id": "return", "time": 6, "pose": {} }
+        ]
+      },
+      "expressions": [
+        { "frame": 0, "values": {} },
+        { "frame": 45, "values": { "happy": 0.4 } },
+        { "frame": 110, "values": { "happy": 0.4 } },
+        { "frame": 180, "values": {} }
+      ]
+    }]
+  }]
+}

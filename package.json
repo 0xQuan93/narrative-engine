@@ -1,0 +1,34 @@
+{
+  "name": "narrative-engine-community",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "type": "module",
+  "description": "Local developer preview for VRM stories with PoseLab motion and Remotion rendering",
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "evaluate": "node scripts/evaluate.mjs",
+    "setup": "node scripts/setup.mjs",
+    "import:vrm": "node scripts/import-vrm.mjs",
+    "import:motion": "node scripts/import-poselab.mjs",
+    "motions": "node scripts/list-motions.mjs",
+    "render": "node scripts/render.mjs",
+    "subtitles": "node scripts/export-subtitles.mjs",
+    "verify:render": "node scripts/verify-render.mjs",
+    "studio": "remotion studio src/render/index.jsx --no-open",
+    "gui": "node scripts/gui.mjs",
+    "test:gui": "node tests/gui.test.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.522",
+    "@remotion/cli": "4.0.522",
+    "@remotion/renderer": "4.0.522",
+    "@remotion/player": "4.0.522",
+    "@pixiv/three-vrm": "3.5.2",
+    "remotion": "4.0.522",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "three": "0.184.0"
+  },
+  "devDependencies": {"esbuild": "0.28.1"},
+  "engines": { "node": ">=22" }
+}

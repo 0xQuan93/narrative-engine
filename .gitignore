@@ -1,0 +1,8 @@
+node_modules/
+out/
+.cache/
+public/assets/
+assets.lock.json
+.assets-import.lock
+*.log
+.env*
