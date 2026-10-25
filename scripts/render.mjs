@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { evaluateEpisodeAtFrame } from '../src/episode.mjs';
 import { sha256, canonical, hashFile, verifyAssets, sourceHashes, jobIdentity, reusableReceipt, recoverPublication, executeJob } from '../src/jobs.mjs';
+import { acquireProcessLock, releaseProcessLock } from '../src/process-lock.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const encoding = {codec: 'h264', pixelFormat: 'yuv420p', imageFormat: 'png', colorSpace: 'bt709', crf: 18, muted: true};
@@ -56,9 +57,8 @@ async function main() {
   }
   await mkdir(path.dirname(outputPath), { recursive: true });
   const guardPath = `${outputPath}.render.lock`;
-  const guard = await open(guardPath, 'wx').catch((error) => { if (error.code === 'EEXIST') throw new Error(`Output is locked: ${guardPath}. Check for an active renderer before removing a stale lock.`); throw error; });
+  const guard = await acquireProcessLock(guardPath);
   try {
-    await guard.writeFile(JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
     await recoverPublication(outputPath);
     const snapshot = await inspect();
     const cached = await reusableReceipt(`${outputPath}.receipt.json`, outputPath, snapshot.identity);
@@ -99,6 +99,6 @@ async function main() {
       console.log(`Rendered: ${outputPath}`);
     } catch (error) { await log.write(`${error.stack || error}\n`); throw error; }
     finally { await log.close(); }
-  } finally { await guard.close(); await rm(guardPath, { force: true }); }
+  } finally { await releaseProcessLock(guard, guardPath).catch((error) => { console.error(`Could not release render lock: ${error.message}`); }); }
 }
 main().catch((error) => { console.error(`Render failed: ${error.message}`); process.exitCode = 1; });

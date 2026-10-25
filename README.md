@@ -36,7 +36,7 @@ npm run render -- --episode out/setup/first-take.json --out out/first-take.mp4 -
 npm run subtitles -- out/setup/first-take.json out/first-take-captions
 ```
 
-The `subtitles` command writes `out/first-take-captions.srt` and `.vtt`. `npm run evaluate -- out/setup/first-take.json 0` prints the deterministic state at frame 0. To reuse or modify a take, edit a copy of the generated episode JSON, then pass it to `npm run render -- --episode ... --out ...`. `npm run studio` opens Remotion Studio after setup. Repeating the same render command verifies and reuses a matching saved artifact; `--force` renders again.
+The `subtitles` command writes `out/first-take-captions.srt` and `.vtt`. `npm run evaluate -- out/setup/first-take.json 0` prints the deterministic state at frame 0. To reuse or modify a take, edit a copy of the generated episode JSON, then pass it to `npm run render -- --episode ... --out ...`. `npm run studio` opens Remotion Studio after setup. Repeating the same render command verifies and reuses a matching saved artifact; `--force` renders again. An interrupted render leaves `*.render.lock` beside the output. The next run keeps that lock when the recorded process is still alive, and removes it when that process is gone.
 
 ## Local files and limits
 
