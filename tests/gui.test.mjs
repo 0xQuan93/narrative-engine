@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { Readable, Writable } from 'node:stream';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import { createGuiServer } from '../scripts/gui.mjs';
+import { isLiveRenderProcess, pidAlive } from '../src/process-lock.mjs';
 import { createScriptEpisode, DEFAULT_SCRIPT_SETTINGS } from '../src/script-project.mjs';
 import {executeJob} from '../src/jobs.mjs';
 import { studioFixture } from './script-project.test.mjs';
@@ -131,4 +133,63 @@ test('constructing a second server does not mutate existing jobs; completed vide
     assert.equal(response.headers['Content-Range'], 'bytes 2-5/10');
     assert.equal((await request(server, `/output/${id}/video.mp4`, { headers: { range: 'bytes=20-' } })).code, 416);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+async function fakeRender() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'narrative-gui-render-'));
+  const script = path.join(dir, 'scripts/render.mjs');
+  await mkdir(path.dirname(script), { recursive: true });
+  await writeFile(script, 'setInterval(() => {}, 1 << 30);\n');
+  const child = spawn(process.execPath, [script], { detached: true, stdio: 'ignore' });
+  for (let i = 0; i < 50 && !isLiveRenderProcess(child.pid); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  return { pid: child.pid, async stop() {
+    try { if (isLiveRenderProcess(child.pid)) child.kill('SIGKILL'); } catch {}
+    if (child.exitCode === null && child.signalCode === null) await new Promise((resolve) => child.once('exit', resolve));
+    await rm(dir, { recursive: true, force: true });
+  } };
+}
+test('a reused owner pid does not block Script Studio, and a live renderer does', async () => {
+  const root = await setup();
+  const staleId = '00000000-0000-4000-8000-000000000010';
+  const staleDir = path.join(root, 'out/studio', staleId);
+  await mkdir(staleDir, { recursive: true });
+  await writeFile(path.join(staleDir, 'job.json'), JSON.stringify({ id: staleId, status: 'running', ownerPid: process.pid, createdAt: '2026-01-01' }));
+  const child = new EventEmitter();
+  const server = await createGuiServer({ root, buildUI: false, spawnRender: () => child });
+  const renderer = await fakeRender();
+  const liveId = '00000000-0000-4000-8000-000000000011';
+  try {
+    assert.equal(isLiveRenderProcess(renderer.pid), true);
+    assert.equal((await request(server, '/api/render', { method: 'POST', body: { settings: DEFAULT_SCRIPT_SETTINGS } })).code, 202);
+    assert.equal((await request(server, `/api/jobs/${staleId}`)).data.status, 'failed');
+    child.emit('close', 1);
+    const liveDir = path.join(root, 'out/studio', liveId);
+    await mkdir(liveDir, { recursive: true });
+    await writeFile(path.join(liveDir, 'job.json'), JSON.stringify({ id: liveId, status: 'running', pid: renderer.pid, createdAt: '2026-01-03' }));
+    const restarted = await createGuiServer({ root, buildUI: false, spawnRender: () => new EventEmitter() });
+    assert.equal((await request(restarted, '/api/render', { method: 'POST', body: { settings: DEFAULT_SCRIPT_SETTINGS } })).code, 409);
+    await renderer.stop();
+    for (let i = 0; i < 50 && pidAlive(renderer.pid); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal((await request(restarted, `/api/jobs/${liveId}`)).data.status, 'failed');
+    const after = await request(restarted, '/api/render', { method: 'POST', body: { settings: DEFAULT_SCRIPT_SETTINGS } });
+    assert.equal(after.code, 202);
+    restarted.stopActiveWork();
+  } finally { await renderer.stop(); await rm(root, { recursive: true, force: true }); }
+});
+test('stopping Script Studio signals the detached render process group', async () => {
+  const root = await setup();
+  const child = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+  const server = await createGuiServer({ root, buildUI: false, spawnRender: () => child });
+  try {
+    assert.equal((await request(server, '/api/render', { method: 'POST', body: { settings: DEFAULT_SCRIPT_SETTINGS } })).code, 202);
+    assert.equal(pidAlive(child.pid), true);
+    server.stopActiveWork();
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('detached render was not stopped')), 1000)),
+    ]);
+    assert.equal(pidAlive(child.pid), false);
+  } finally {
+    try { process.kill(child.pid, 'SIGKILL'); } catch {}
+    await rm(root, { recursive: true, force: true });
+  }
 });

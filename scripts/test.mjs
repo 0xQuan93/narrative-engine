@@ -12,3 +12,4 @@ await import('../tests/dialogue.test.mjs');
 await import('../tests/dialogue-episode.test.mjs');
 await import('../tests/script-project.test.mjs');
 await import('../tests/subtitles.test.mjs');
+await import('../tests/process-lock.test.mjs');

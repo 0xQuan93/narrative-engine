@@ -7,6 +7,7 @@ import { createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { atomicJson, reusableReceipt } from '../src/jobs.mjs';
+import { isLiveRenderProcess } from '../src/process-lock.mjs';
 import { createScriptEpisode, validateScriptSettings, DEFAULT_SCRIPT_SETTINGS } from '../src/script-project.mjs';
 import { writeSubtitleSidecars } from '../src/subtitles.mjs';
 
@@ -55,17 +56,19 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
     throw error;
   }
   let saved = { ...DEFAULT_SCRIPT_SETTINGS }, active = null, latest = null;
-  const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
   try { saved = validateScriptSettings((await loadJson(draftPath)).settings); } catch {}
+  let recovered = null;
   for (const id of (await readdir(studio)).filter((name) => ID.test(name))) {
     try {
       const file = path.join(studio, id, 'job.json'); const job = await loadJson(file);
-      if (['running', 'queued'].includes(job.status)) {
-        if (pidAlive(job.pid || job.ownerPid)) active = { id, child: null, pid: job.pid || job.ownerPid };
+      if (['running', 'queued'].includes(job.status) && isLiveRenderProcess(job.pid)
+          && (!recovered || (job.createdAt || '') > recovered.createdAt)) {
+        recovered = { id, child: null, pid: job.pid, createdAt: job.createdAt || '' };
       }
       if (!latest || (job.createdAt || '') > latest.createdAt) latest = { id, createdAt: job.createdAt || '' };
     } catch {}
   }
+  if (recovered) active = recovered;
   if (buildUI) {
     const { build } = await import('esbuild');
     await build({ entryPoints: [path.join(root, 'src/ui/index.jsx')], outfile: path.join(root, '.cache/gui/app.js'), bundle: true, format: 'esm', platform: 'browser', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"production"' }, logLevel: 'warning' });
@@ -77,14 +80,16 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
   };
   const jobResponse = async (id) => {
     let job = await loadJson(path.join(studio, id, 'job.json'));
-    if (['running', 'queued'].includes(job.status) && !(active?.id === id && active.child)) {
+    const trackedHere = active?.id === id;
+    const startingHere = trackedHere && !active.child && !Number.isInteger(job.pid);
+    if (['running', 'queued'].includes(job.status) && !(trackedHere && active.child)) {
       const outputPath = path.join(studio, id, 'video.mp4');
       let receipt; try { receipt = await loadJson(`${outputPath}.receipt.json`); } catch {}
       if (receipt?.status === 'completed' && await reusableReceipt(`${outputPath}.receipt.json`, outputPath, receipt.identity)) {
         try { await ensureSidecars(id); job = { ...job, status: 'completed', finishedAt: new Date().toISOString() }; }
         catch (error) { job = { ...job, status: 'failed', error: `Subtitle recovery failed: ${error.message}`, finishedAt: new Date().toISOString() }; }
       }
-      else if (!pidAlive(job.pid || job.ownerPid)) job = { ...job, status: 'failed', error: 'Render process ended without a verified output', finishedAt: new Date().toISOString() };
+      else if (!startingHere && !isLiveRenderProcess(job.pid)) job = { ...job, status: 'failed', error: 'Render process ended without a verified output', finishedAt: new Date().toISOString() };
       if (job.status !== 'running' && job.status !== 'queued') { await atomicJson(path.join(studio, id, 'job.json'), job); if (active?.id === id) active = null; }
     }
     const result = { id, status: job.status, error: job.error, createdAt: job.createdAt, settings: job.settings };
@@ -176,7 +181,16 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
       json(res, 404, { error: 'Not found' });
     } catch (error) { if (!res.headersSent) json(res, error.status || (error.code === 'ENOENT' ? 404 : 400), { error: error.message }); else res.destroy(); }
   });
-  server.on('close', () => { if (active?.child?.pid) { try { process.kill(-active.child.pid, 'SIGTERM'); } catch {} } });
+  const signalGroup = (pid) => {
+    try { process.kill(-pid, 'SIGTERM'); }
+    catch { try { process.kill(pid, 'SIGTERM'); } catch {} }
+  };
+  server.stopActiveWork = () => {
+    const childPid = active?.child?.pid;
+    if (Number.isInteger(childPid) && childPid > 0) { signalGroup(childPid); return; }
+    if (isLiveRenderProcess(active?.pid)) signalGroup(active.pid);
+  };
+  server.on('close', () => { server.stopActiveWork(); });
   return server;
 }
 
@@ -185,5 +199,16 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid NARRATIVE_GUI_PORT');
   const server = await createGuiServer();
   server.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+  let shuttingDown = false;
+  const shutdown = (code) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server.stopActiveWork();
+    const timer = setTimeout(() => process.exit(code), 1000);
+    timer.unref();
+    server.close(() => process.exit(code));
+  };
+  process.once('SIGINT', () => shutdown(130));
+  process.once('SIGTERM', () => shutdown(143));
   server.listen(port, '127.0.0.1', () => console.log(`Script Studio: http://127.0.0.1:${port}/`));
 }
