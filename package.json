@@ -14,7 +14,7 @@
     "render": "node scripts/render.mjs",
     "subtitles": "node scripts/export-subtitles.mjs",
     "verify:render": "node scripts/verify-render.mjs",
-    "studio": "remotion studio src/render/index.jsx --no-open",
+    "studio": "node scripts/studio.mjs",
     "gui": "node scripts/gui.mjs",
     "test:gui": "node tests/gui.test.mjs"
   },

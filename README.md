@@ -7,7 +7,7 @@ This export contains source, synthetic test fixtures, and one open-license font.
 ## Requirements
 
 - Node.js 22 or newer and npm.
-- A local Chromium executable for preview and rendering. The renderer defaults to `/usr/bin/chromium`; set `NARRATIVE_BROWSER` to another absolute executable path. The automated tests do not launch Chromium.
+- A local Chromium-based browser for preview and rendering. The tools use `/usr/bin/chromium` when that file is executable (the usual Omarchy and Arch path). Otherwise they try `chromium-browser`, `google-chrome-stable`, and `google-chrome` in `/usr/bin` and then on `PATH`. Set `NARRATIVE_BROWSER` to an absolute executable path to override the search. Set `NARRATIVE_GL` to change the graphics backend (`angle` by default; `swiftshader` is a software fallback when the GPU backend will not start). The automated tests do not launch a browser.
 - A structurally valid, embedded-texture humanoid VRM 0 or VRM 1 file with standard mouth presets (`a/i/u/e/o` for VRM 0, `aa/ih/ou/ee/oh` for VRM 1). The GUI needs these for text-driven mouth cues. Import preflight is not a full visual compatibility check.
 - Two PoseLab **normalized animation JSON** clips: one gesture and one idle. The importer does not accept FBX, raw Mixamo tracks, or a complete `.pose` project. Use clips and models with appropriate rights.
 
@@ -36,7 +36,7 @@ npm run render -- --episode out/setup/first-take.json --out out/first-take.mp4 -
 npm run subtitles -- out/setup/first-take.json out/first-take-captions
 ```
 
-The `subtitles` command writes `out/first-take-captions.srt` and `.vtt`. `npm run evaluate -- out/setup/first-take.json 0` prints the deterministic state at frame 0. To reuse or modify a take, edit a copy of the generated episode JSON, then pass it to `npm run render -- --episode ... --out ...`. `npm run studio` opens Remotion Studio after setup. Repeating the same render command verifies and reuses a matching saved artifact; `--force` renders again. An interrupted render leaves `*.render.lock` beside the output. The next run keeps that lock when the recorded process is still alive, and removes it when that process is gone.
+The `subtitles` command writes `out/first-take-captions.srt` and `.vtt`. `npm run evaluate -- out/setup/first-take.json 0` prints the deterministic state at frame 0. To reuse or modify a take, edit a copy of the generated episode JSON, then pass it to `npm run render -- --episode ... --out ...`. `npm run studio` opens Remotion Studio after setup and reports a missing avatar lock or first take before Remotion starts. Repeating the same render command verifies and reuses a matching saved artifact; `--force` renders again. An interrupted render leaves `*.render.lock` beside the output. The next run keeps that lock when the recorded process is still alive, and removes it when that process is gone.
 
 ## Local files and limits
 

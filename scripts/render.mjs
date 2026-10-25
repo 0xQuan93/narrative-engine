@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { evaluateEpisodeAtFrame } from '../src/episode.mjs';
+import { resolveBrowserExecutable } from '../src/browser-executable.mjs';
+import { assertStudioBundleInputs } from '../src/studio-bundle.mjs';
 import { sha256, canonical, hashFile, verifyAssets, sourceHashes, jobIdentity, reusableReceipt, recoverPublication, executeJob } from '../src/jobs.mjs';
 import { acquireProcessLock, releaseProcessLock } from '../src/process-lock.mjs';
 
@@ -28,12 +30,14 @@ async function main() {
   const height = integer(options.height ?? 720, 'height', 16, 4320);
   if (width % 2 || height % 2) throw new Error('Dimensions must be even');
   const concurrency = integer(options.concurrency ?? 1, 'concurrency', 1, 16);
-  const browserExecutable = process.env.NARRATIVE_BROWSER || '/usr/bin/chromium';
-  if (!path.isAbsolute(browserExecutable)) throw new Error('NARRATIVE_BROWSER must be absolute');
+  const browserExecutable = resolveBrowserExecutable();
   const gl = process.env.NARRATIVE_GL || 'angle';
   if (!['angle', 'angle-egl', 'swiftshader', 'swangle', 'egl', 'vulkan'].includes(gl)) throw new Error('Invalid NARRATIVE_GL');
   const browserVersion = spawnSync(browserExecutable, ['--version'], { encoding: 'utf8', timeout: 10000 });
-  if (browserVersion.status !== 0) throw new Error('Browser executable could not report its version');
+  if (browserVersion.error || browserVersion.status !== 0) {
+    const detail = browserVersion.error?.message || browserVersion.stderr?.trim() || `exit ${browserVersion.status}`;
+    throw new Error(`Browser at ${browserExecutable} could not report its version (${detail}). Set NARRATIVE_BROWSER to an absolute Chromium or Chrome path.`);
+  }
   const episodePath = path.resolve(options.episode);
   const lockPath = path.resolve(options['assets-lock'] || path.join(root, 'assets.lock.json'));
   const outputPath = path.resolve(options.out);
@@ -55,6 +59,7 @@ async function main() {
     const inputs = { episodeRawSha256: sha256(raw), episodeCanonicalSha256: sha256(canonical(episode)), assets, sources: await sourceHashes(root), runtime: { node: process.version, platform: process.platform, arch: process.arch, browserExecutable, browserSha256: await hashFile(browserExecutable), browserVersion: browserVersion.stdout.trim() }, render: { compositionId: 'NarrativeEpisode', width, height, concurrency, gl, verifyFrameOrder: Boolean(options['verify-frames']), mode: still ? 'still' : 'video', frame: frame ?? null, frameRange: frameRange ?? null, ...encoding } };
     return { episode, assets, inputs, identity: jobIdentity(inputs), frame, frameRange };
   }
+  await assertStudioBundleInputs(root);
   await mkdir(path.dirname(outputPath), { recursive: true });
   const guardPath = `${outputPath}.render.lock`;
   const guard = await acquireProcessLock(guardPath);
