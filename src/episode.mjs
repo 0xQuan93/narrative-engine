@@ -10,9 +10,12 @@
  * Expressions interpolate linearly; missing names have weight zero. Empty or
  * absent expression tracks yield {} and require resetting expression weights.
  * Assets are opaque actor assetId references, resolved outside this core.
+ * Optional performance.reactivity adds look, beat, and expression offsets on
+ * top of the clip. Omit it and the pose matches the clip alone.
  */
 
 import {validateDialogue, evaluateDialogueAtFrame} from './dialogue.mjs';
+import {validateReactivity, applyReactivity} from './reactive-motion.mjs';
 
 export const EPISODE_SCHEMA = 'narrative-episode/0.1';
 
@@ -225,12 +228,19 @@ export function validateEpisode(episode) {
     const usedActors = new Set();
     shot.performances.forEach((performance, j) => {
       const pp = `${path}.performances[${j}]`;
-      object(performance, pp, ['actorId', 'sequence', 'expressions'], ['actorId', 'sequence']);
+      object(performance, pp, ['actorId', 'sequence', 'expressions', 'reactivity'], ['actorId', 'sequence']);
       if (!actorIds.has(performance.actorId)) fail(`${pp}.actorId`, 'unknown actor');
       if (usedActors.has(performance.actorId)) fail(`${pp}.actorId`, 'duplicate performance for actor in shot');
       usedActors.add(performance.actorId);
       sequence(performance.sequence, `${pp}.sequence`);
       if (own(performance, 'expressions')) expressions(performance.expressions, shot.durationFrames, `${pp}.expressions`);
+      if (own(performance, 'reactivity')) {
+        validateReactivity(performance.reactivity, `${pp}.reactivity`, {
+          shotStart: shot.startFrame,
+          shotDuration: shot.durationFrames,
+          episodeDuration: episode.durationFrames,
+        });
+      }
     });
   });
   if (expectedStart !== episode.durationFrames) fail('episode.shots', 'shots must cover the complete episode');
@@ -383,23 +393,51 @@ function evaluateValidated(episode, frame) {
   const localFrame = frame - shot.startFrame;
   const seconds = localFrame / episode.fps;
   const dialogue = episode.dialogue ? evaluateDialogueAtFrame(episode.dialogue, frame) : null;
+  const camera = evaluateCamera(shot.camera, localFrame, episode.fps);
+  const previousCamera = evaluateCamera(shot.camera, Math.max(0, localFrame - 1), episode.fps);
   return {
     schema: EPISODE_SCHEMA,
     frame,
     shotId: shot.id,
     localFrame,
     seconds,
-    camera: evaluateCamera(shot.camera, localFrame, episode.fps),
-    actors: episode.actors.map((actor) => {
+    camera,
+    actors: episode.actors.map((actor, actorIndex) => {
       const performance = shot.performances.find((entry) => entry.actorId === actor.id);
+      let pose = performance ? evaluatePose(performance.sequence, seconds) : {};
+      let expressions = {
+        ...(performance ? evaluateExpressions(performance.expressions, localFrame) : {}),
+        ...(dialogue && actor.id === episode.dialogue.actorId ? dialogue.mouth : {}),
+      };
+      let motion;
+      if (performance && own(performance, 'reactivity')) {
+        const applied = applyReactivity({
+          reactivity: performance.reactivity,
+          pose,
+          expressions,
+          frame,
+          fps: episode.fps,
+          camera,
+          previousCamera,
+          handheldStrength: shot.camera.handheld?.strength ?? 0,
+          dialogue: episode.dialogue ?? null,
+          dialogueState: dialogue,
+          isSpeaker: Boolean(dialogue && actor.id === episode.dialogue.actorId),
+          actorIndex,
+          actorCount: episode.actors.length,
+          shotStart: shot.startFrame,
+          shotEnd: shot.startFrame + shot.durationFrames,
+        });
+        pose = applied.pose;
+        expressions = applied.expressions;
+        motion = applied.motion;
+      }
       return {
         id: actor.id,
         assetId: actor.assetId,
-        pose: performance ? evaluatePose(performance.sequence, seconds) : {},
-        expressions: {
-          ...(performance ? evaluateExpressions(performance.expressions, localFrame) : {}),
-          ...(dialogue && actor.id === episode.dialogue.actorId ? dialogue.mouth : {}),
-        },
+        pose,
+        expressions,
+        ...(motion ? {motion} : {}),
       };
     }),
   };

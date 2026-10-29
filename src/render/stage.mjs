@@ -5,12 +5,17 @@ import {compileEpisode} from '../episode.mjs';
 import {poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
+import {resolveExpressionWeights} from '../reactive-motion.mjs';
 import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
 import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {BokehPass} from 'three/addons/postprocessing/BokehPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
-// No clocks, animation mixers, random blinks, spring physics or requestAnimationFrame.
+// No clocks, animation mixers, random blinks, spring integration, or requestAnimationFrame.
+// Spring bones stay at their imported rest: the solver carries the previous tail
+// and would change pixels when Remotion seeks out of order. Look-at, aim, and
+// expression offsets are already in the evaluated pose (src/reactive-motion.mjs);
+// vrm.lookAt is not applied again. Actor slots are 1.7m apart, matching that module.
 // All mutable avatar state is reset before each absolute-frame evaluation.
 export async function createStage({canvas, width, height, episode, assets, assetUrl}) {
   const evaluateFrame = compileEpisode(episode);
@@ -107,8 +112,13 @@ export async function createStage({canvas, width, height, episode, assets, asset
           throw new Error(`Avatar ${actor.id} needs the '${name}' mouth expression for script animation`);
         }
       }
+      const authored = new Set();
+      for (const shot of episode.shots) for (const performance of shot.performances) {
+        if (performance.actorId !== actor.id) continue;
+        for (const key of performance.expressions ?? []) for (const name of Object.keys(key.values)) authored.add(name);
+      }
       // Frozen secondary bones retain their imported rest transforms.
-      avatars.set(actor.id, {vrm, wrapper, rest});
+      avatars.set(actor.id, {vrm, wrapper, rest, authored});
     }
   } catch (error) {
     dispose(); throw error;
@@ -129,7 +139,7 @@ export async function createStage({canvas, width, height, episode, assets, asset
     camera.rotateZ(THREE.MathUtils.degToRad(state.camera.rollDegrees ?? 0));
     camera.updateProjectionMatrix();
     for (const actor of state.actors) {
-      const {vrm, wrapper, rest} = avatars.get(actor.id);
+      const {vrm, wrapper, rest, authored} = avatars.get(actor.id);
       wrapper.visible = active.has(actor.id);
       for (const entry of rest) {
         entry.object.position.copy(entry.position);
@@ -140,13 +150,14 @@ export async function createStage({canvas, width, height, episode, assets, asset
       vrm.humanoid.setNormalizedPose(poseForVrm(actor.pose, vrm.meta.metaVersion));
       vrm.humanoid.update();
       vrm.nodeConstraintManager?.update();
+      const weights = resolveExpressionWeights(
+        actor.expressions,
+        (name) => Boolean(vrm.expressionManager?.getExpression(name)),
+        authored,
+        actor.id,
+      );
       vrm.expressionManager?.resetValues();
-      for (const [name, weight] of Object.entries(actor.expressions)) {
-        if (!vrm.expressionManager?.getExpression(name)) {
-          throw new Error(`Avatar ${actor.id} has no expression '${name}'`);
-        }
-        vrm.expressionManager.setValue(name, weight);
-      }
+      for (const [name, weight] of weights) vrm.expressionManager.setValue(name, weight);
       vrm.expressionManager?.update();
     }
     scene.updateMatrixWorld(true);

@@ -48,6 +48,16 @@ test('studio saves drafts, enforces origin/host/body limits and blocks arbitrary
     assert.deepEqual((await request(restored, '/api/bootstrap')).data.settings, settings);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+test('studio accepts a lively reactivity draft and rejects an unknown preset', async () => {
+  const root = await setup(); const server = await createGuiServer({root, buildUI: false});
+  const settings = {...DEFAULT_SCRIPT_SETTINGS, text: 'Hello there.', reactivity: 'lively', reactivityAmount: 0.5};
+  try {
+    assert.equal((await request(server, '/api/save', {method: 'POST', body: {settings}})).code, 200);
+    assert.equal((await request(server, '/api/draft')).data.settings.reactivity, 'lively');
+    assert.equal((await request(server, '/api/draft')).data.settings.reactivityAmount, 0.5);
+    assert.equal((await request(server, '/api/save', {method: 'POST', body: {settings: {...settings, reactivity: 'physics'}}})).code, 400);
+  } finally { await rm(root, {recursive: true, force: true}); }
+});
 test('unfinished storyboard can be saved and restored before it can render', async () => {
   const root = await setup(); const server = await createGuiServer({root, buildUI: false});
   const settings = {...DEFAULT_SCRIPT_SETTINGS, text: 'An unfinished first scene.', camera: 'storyboard'};

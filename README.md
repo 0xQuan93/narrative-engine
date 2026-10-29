@@ -27,7 +27,7 @@ npm run gui
 
 Open <http://127.0.0.1:18994/>. The setup command validates and imports the avatar and motion files, then writes a generic first take under `out/setup/`. `--source-vrm` describes the **motion clip's original normalized playback convention**, not the VRM version of the avatar being imported. PoseLab's older bank JSON does not record that convention; choose `0` or `1` based on how the source clip was authored. See [PoseLab input](docs/POSELAB.md).
 
-Script Studio uses the imported gesture once, then loops the idle clip. It offers camera cuts, medium/close views, a word-cued directed take, and 2–8 section storyboards. Save a local draft, preview, or render a silent MP4 with captions. See [Script Studio](docs/SCRIPT-STUDIO.md).
+Script Studio uses the imported gesture once, then loops the idle clip. It offers camera cuts, medium/close views, a word-cued directed take, and 2–8 section storyboards. Save a local draft, preview, or render a silent MP4 with captions. Optional reactivity can look toward the camera, accent script beats, and tighten mouth shapes without replacing the PoseLab clip. See [Script Studio](docs/SCRIPT-STUDIO.md) and [Reactive motion](docs/REACTIVE-MOTION.md).
 
 Render the generated first take directly from the CLI:
 
@@ -42,7 +42,7 @@ The `subtitles` command writes `out/first-take-captions.srt` and `.vtt`. `npm ru
 
 `assets.lock.json` and `public/assets/` hold your imported VRM locally. `out/setup/` holds the imported sequences, provenance, and first take. `out/studio/` holds drafts, episodes, output, receipts, and logs. These paths are ignored by Git; do not force-add them when sharing a fork. The original VRM and motion sources are not altered.
 
-The current GUI uses one configured avatar and two configured clips; it does not yet upload arbitrary assets from the page or browse the whole PoseLab bank. Frame-based camera motion, seeded handheld motion, depth blur, captions, and approximate spelling-based vowel animation are implemented. Voice, music, sound, precise speech alignment, full PoseLab Director import, root motion, independent actor placement, and hosted rendering are outside this preview. Arbitrary rigs, especially VRM 1, still need visual acceptance. This is a local authoring tool, not a hardened public upload service.
+The current GUI uses one configured avatar and two configured clips; it does not yet upload arbitrary assets from the page or browse the whole PoseLab bank. Frame-based camera motion, seeded handheld motion, depth blur, captions, approximate spelling-based vowel animation, and optional frame-deterministic reactive motion are implemented. Voice, music, sound, precise speech alignment, full PoseLab Director import, root motion, independent actor placement, spring-bone simulation, and hosted rendering are outside this preview. Arbitrary rigs, especially VRM 1, still need visual acceptance. This is a local authoring tool, not a hardened public upload service.
 
 ## License and CI
 
