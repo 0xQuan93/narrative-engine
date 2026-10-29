@@ -1,6 +1,10 @@
 // Episode rotations use the VRM1 (+Z forward) convention. VRM0 normalized
 // skeletons retain the older axes even after rotateVRM0 turns the visible root.
 // Match three-vrm-animation's VRM0 quaternion/translation convention conversion.
+export function axesForVrm(vector, metaVersion) {
+  return vector.map((value, index) => metaVersion === '0' && index !== 1 ? -value : value);
+}
+
 export function poseForVrm(pose, metaVersion) {
   return Object.fromEntries(Object.entries(pose).map(([bone, transform]) => {
     const result = {};

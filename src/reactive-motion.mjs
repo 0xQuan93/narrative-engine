@@ -8,10 +8,14 @@
  * and spring bones integrate from the previous tail position.
  *
  * Rotations are VRM 1 normalized deltas (+Y up, +Z forward, +X to the
- * character's left), the same convention as episode poses. Arm aim is a
- * fixed-iteration CCD solve on a canonical T-pose right arm. It does not read
- * a particular avatar's bone lengths.
+ * character's left), the same convention as episode poses. The evaluator aims
+ * a canonical T-pose right arm so tests can run without a VRM. At draw time
+ * the stage re-solves that aim from the loaded arm rest (A-pose on typical
+ * VRM 0) and, when look-at is bone-type, writes eye bones from the avatar's
+ * range map. Spring bones stay frozen.
  */
+
+import {canonicalExpressionName, resolveExpressionName} from './expression-names.mjs';
 
 const REST = Object.freeze([0, 0, 0, 1]);
 const YAW_LIMIT = 0.62;
@@ -36,12 +40,18 @@ const PRESETS = Object.freeze({
 });
 
 const LOOK_BONES = Object.freeze([
-  ['spine', 'torso', 0.12],
-  ['chest', 'torso', 0.2],
-  ['upperChest', 'torso', 0.16],
-  ['neck', 'head', 0.3],
-  ['head', 'head', 0.7],
+  ['spine', 'torso', 0.16],
+  ['chest', 'torso', 0.26],
+  ['upperChest', 'torso', 0.2],
+  ['neck', 'head', 0.2],
+  ['head', 'head', 0.42],
 ]);
+const HEAD_CHANNEL_CAP = 0.45;
+const AIM_CONE = 32 * Math.PI / 180;
+const AIM_UP_BIAS = 0.08;
+const AIM_BLEND_START = 0.18;
+const AIM_BLEND_SPAN = 0.42;
+const TORSO_YAW_SHARE = LOOK_BONES.filter(([, channel]) => channel === 'torso').reduce((sum, [, , share]) => sum + share, 0);
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const clamp01 = (value) => clamp(value, 0, 1);
@@ -179,42 +189,141 @@ function replaceBlend(pose, bone, targetRotation, amount) {
   pose[bone] = {rotation: slerp(base, targetRotation, weight), position};
 }
 
-function clampReach(target) {
+function clampReach(target, upperLength, lowerLength) {
   const length = hypot3(target);
-  const max = UPPER_ARM + LOWER_ARM - 1e-4;
-  const min = Math.abs(UPPER_ARM - LOWER_ARM) + 1e-4;
+  const max = upperLength + lowerLength - 1e-4;
+  const min = Math.abs(upperLength - lowerLength) + 1e-4;
   if (length < 1e-8) return [-max, 0, 0];
   const clamped = Math.min(max, Math.max(min, length));
   const scale = clamped / length;
   return target.map((v) => v * scale);
 }
 
-function armForwardKinematics(qUpper, qLower) {
-  const upperDir = rotateVector(qUpper, ARM_REST);
-  const elbow = upperDir.map((v) => v * UPPER_ARM);
-  const lowerDir = rotateVector(mul(qUpper, qLower), ARM_REST);
-  const hand = elbow.map((v, i) => v + lowerDir[i] * LOWER_ARM);
+function armForwardKinematics(qUpper, qLower, upperRest, lowerRest, upperLength, lowerLength) {
+  const upperDir = rotateVector(qUpper, upperRest);
+  const elbow = upperDir.map((v) => v * upperLength);
+  const lowerDir = rotateVector(mul(qUpper, qLower), lowerRest);
+  const hand = elbow.map((v, i) => v + lowerDir[i] * lowerLength);
   return {elbow, hand};
 }
 
-/** Canonical right-arm CCD. `target` is shoulder-local, rest pose points along -X. */
-export function solveRightArm(target) {
-  const goal = clampReach(target);
+function initialLowerBend(lowerRest) {
+  const rest = normalize3(lowerRest);
+  if (dot(rest, ARM_REST) > 0.99) return quatFromAxisAngle([0, 1, 0], 0.55);
+  const axis = cross(rest, [0, 0.35, 1]);
+  if (hypot3(axis) < 1e-5) return [0, 0, 0, 1];
+  return quatFromAxisAngle(axis, 0.65);
+}
+
+/**
+ * Right-arm CCD. `target` is shoulder-local.
+ * The default rest points along -X (canonical T-pose). Pass the loaded bone
+ * directions to aim an A-pose; those directions are the child bone offsets.
+ */
+export function solveRightArm(target, {
+  upperRest = ARM_REST,
+  lowerRest = ARM_REST,
+  upperLength = UPPER_ARM,
+  lowerLength = LOWER_ARM,
+} = {}) {
+  const upper = normalize3(upperRest);
+  const lower = normalize3(lowerRest);
+  const goal = clampReach(target, upperLength, lowerLength);
   let qUpper = [0, 0, 0, 1];
-  let qLower = quatFromAxisAngle([0, 1, 0], 0.55);
+  let qLower = initialLowerBend(lower);
   for (let step = 0; step < CCD_STEPS; step += 1) {
-    const lower = armForwardKinematics(qUpper, qLower);
-    const lowerDelta = fromToQuat(sub(lower.hand, lower.elbow), sub(goal, lower.elbow));
+    const lowerPose = armForwardKinematics(qUpper, qLower, upper, lower, upperLength, lowerLength);
+    const lowerDelta = fromToQuat(sub(lowerPose.hand, lowerPose.elbow), sub(goal, lowerPose.elbow));
     qLower = normalizeQuat(mul(invertQuat(qUpper), mul(lowerDelta, mul(qUpper, qLower))));
-    const upper = armForwardKinematics(qUpper, qLower);
-    const upperDelta = fromToQuat(upper.hand, goal);
+    const upperPose = armForwardKinematics(qUpper, qLower, upper, lower, upperLength, lowerLength);
+    const upperDelta = fromToQuat(upperPose.hand, goal);
     qUpper = normalizeQuat(mul(upperDelta, qUpper));
   }
-  return {upper: qUpper, lower: qLower, goal};
+  return {upper: qUpper, lower: qLower, goal, upperRest: upper, lowerRest: lower, upperLength, lowerLength};
 }
 
 export function rightArmHand(solution) {
-  return armForwardKinematics(solution.upper, solution.lower).hand;
+  return armForwardKinematics(
+    solution.upper,
+    solution.lower,
+    solution.upperRest ?? ARM_REST,
+    solution.lowerRest ?? ARM_REST,
+    solution.upperLength ?? UPPER_ARM,
+    solution.lowerLength ?? LOWER_ARM,
+  ).hand;
+}
+
+function rotateToward(from, to, t) {
+  const start = normalize3(from);
+  const q = fromToQuat(start, normalize3(to));
+  const angle = 2 * Math.acos(clamp(q[3], -1, 1));
+  if (angle < 1e-5) return start;
+  return rotateVector(quatFromAxisAngle([q[0], q[1], q[2]], angle * t), start);
+}
+
+function coneClamp(direction, axis, maxAngle) {
+  const aimed = normalize3(direction);
+  const forward = normalize3(axis);
+  const angle = Math.acos(clamp(dot(aimed, forward), -1, 1));
+  if (angle <= maxAngle) return aimed;
+  return rotateToward(forward, aimed, maxAngle / angle);
+}
+
+/** Chest-local unit aim. Yaw already applied to the torso is removed so the arm does not swing twice. */
+export function pointAimDirection(camera, actorIndex, actorCount, torsoYaw = 0) {
+  const head = actorHeadPosition(actorIndex, actorCount);
+  const shoulder = [head[0] - 0.16, head[1] - 0.32, head[2]];
+  let direction = normalize3(sub(camera.position, shoulder));
+  if (Math.abs(torsoYaw) > 1e-6) direction = rotateVector(quatYXZ(-torsoYaw, 0, 0), direction);
+  direction = normalize3([direction[0], direction[1] + AIM_UP_BIAS, direction[2]]);
+  return coneClamp(direction, [0, 0, 1], AIM_CONE);
+}
+
+function aimBlend(raw) {
+  const t = clamp01((raw - AIM_BLEND_START) / AIM_BLEND_SPAN);
+  return t * t * (3 - 2 * t);
+}
+
+/** Blend a clip arm toward a measured-rest solve. Directions are in one bone space. */
+export function applyMeasuredAim({
+  upper, lower, direction, weight,
+  upperRest, lowerRest, upperLength, lowerLength,
+}) {
+  const reach = 0.82 * (upperLength + lowerLength);
+  const solved = solveRightArm(direction.map((value) => value * reach), {
+    upperRest, lowerRest, upperLength, lowerLength,
+  });
+  const blend = clamp01(weight);
+  return {
+    upper: slerp(upper, solved.upper, blend),
+    lower: slerp(lower, solved.lower, blend),
+    hand: rightArmHand(solved),
+  };
+}
+
+const DEFAULT_LOOK_MAP = (degrees) => 10 * clamp01(degrees / 90);
+
+/**
+ * Eye quaternions for a bone look-at applier.
+ * Yaw is positive toward +X. Pitch is positive looking down.
+ * Maps take degrees and return degrees, matching VRMLookAtRangeMap.map.
+ * The pitch branch matches VRMLookAtBoneApplier.applyYawPitch.
+ */
+export function boneLookEyeRotations(yawRad, pitchRad, maps = {}) {
+  const horizontalInner = maps.horizontalInner ?? DEFAULT_LOOK_MAP;
+  const horizontalOuter = maps.horizontalOuter ?? DEFAULT_LOOK_MAP;
+  const verticalDown = maps.verticalDown ?? DEFAULT_LOOK_MAP;
+  const verticalUp = maps.verticalUp ?? DEFAULT_LOOK_MAP;
+  const yawDeg = yawRad * 180 / Math.PI;
+  const pitchDeg = pitchRad * 180 / Math.PI;
+  const pitch = pitchDeg < 0 ? -verticalDown(-pitchDeg) : verticalUp(pitchDeg);
+  const leftYaw = yawDeg < 0 ? -horizontalInner(-yawDeg) : horizontalOuter(yawDeg);
+  const rightYaw = yawDeg < 0 ? -horizontalOuter(-yawDeg) : horizontalInner(yawDeg);
+  const toRad = (degrees) => degrees * Math.PI / 180;
+  return {
+    left: quatYXZ(toRad(leftYaw), toRad(pitch), 0),
+    right: quatYXZ(toRad(rightYaw), toRad(pitch), 0),
+  };
 }
 
 function windowPulse(frame, start, duration, strength) {
@@ -335,14 +444,6 @@ function addExpression(expressions, name, extra) {
   expressions[name] = clamp01((expressions[name] ?? 0) + extra);
 }
 
-function shoulderTarget(camera, actorIndex, actorCount) {
-  const head = actorHeadPosition(actorIndex, actorCount);
-  const shoulder = [head[0] - 0.18, head[1] - 0.18, head[2]];
-  const aim = normalize3(sub(camera.position, shoulder));
-  const reach = 0.82 * (UPPER_ARM + LOWER_ARM);
-  return aim.map((v) => v * reach);
-}
-
 /**
  * @param {object} input evaluated clip pose plus the shot signals for one frame
  * @returns {{pose: object, expressions: object, motion: object}}
@@ -379,27 +480,44 @@ export function applyReactivity(input) {
   const handheld = clamp((handheldStrength ?? 0) / 1.5, 0, 1);
   const intensity = clamp01(Math.max(punch, marked, spoken) * 0.92 + handheld * 0.2);
 
-  const weights = {head: headWeight, torso: torsoWeight};
-  for (const [bone, channel, share] of LOOK_BONES) {
-    const nod = bone === 'head' ? 0.24 * levels.nod : bone === 'neck' ? 0.1 * levels.nod : 0;
-    const lean = bone === 'head' ? 0.2 * levels.lean : bone === 'chest' ? 0.08 * levels.lean : 0;
-    const bow = (bone === 'chest' || bone === 'spine') ? 0.08 * intensity : 0;
-    const pointYaw = bone === 'spine' ? -0.08 * levels.point : 0;
-    additiveBone(
-      outPose,
-      bone,
-      yaw * share * weights[channel] + pointYaw * torsoWeight,
-      pitch * share * weights[channel] + (nod + bow) * weights[channel],
-      lean * weights[channel],
-    );
+  const lookStrength = clamp01(Math.max(Math.abs(yaw) / YAW_LIMIT, Math.abs(pitch) / PITCH_LIMIT));
+  const headFade = headWeight > 0 ? lookStrength : 0;
+  const accent = 1 - 0.75 * headFade;
+  if (headFade > 0) {
+    fadeBone(outPose, 'head', headFade);
+    fadeBone(outPose, 'neck', headFade);
   }
 
-  const aim = armWeight * armWindow(frame, reactivity.armDelayFrames ?? 0) * levels.point;
+  const weights = {head: headWeight, torso: torsoWeight};
+  const capYaw = YAW_LIMIT * HEAD_CHANNEL_CAP;
+  const capPitch = PITCH_LIMIT * HEAD_CHANNEL_CAP;
+  for (const [bone, channel, share] of LOOK_BONES) {
+    const nod = (bone === 'head' ? 0.24 * levels.nod : bone === 'neck' ? 0.1 * levels.nod : 0) * accent;
+    const lean = (bone === 'head' ? 0.2 * levels.lean : bone === 'chest' ? 0.08 * levels.lean : 0) * accent;
+    const bow = (bone === 'chest' || bone === 'spine') ? 0.08 * intensity : 0;
+    const pointYaw = bone === 'spine' ? -0.08 * levels.point : 0;
+    let boneYaw = yaw * share * weights[channel] + pointYaw * torsoWeight;
+    let bonePitch = pitch * share * weights[channel] + (nod + bow) * weights[channel];
+    if (bone === 'head' || bone === 'neck') {
+      boneYaw = clamp(boneYaw, -capYaw, capYaw);
+      bonePitch = clamp(bonePitch, -capPitch, capPitch);
+    }
+    additiveBone(outPose, bone, boneYaw, bonePitch, lean * weights[channel]);
+  }
+
+  const aimRaw = armWeight * armWindow(frame, reactivity.armDelayFrames ?? 0) * levels.point;
+  const aim = aimBlend(aimRaw);
+  let aimMotion;
   if (aim > 0) {
-    const solved = solveRightArm(shoulderTarget(camera, actorIndex, actorCount));
+    const torsoYaw = yaw * TORSO_YAW_SHARE * torsoWeight;
+    const direction = pointAimDirection(camera, actorIndex, actorCount, torsoYaw);
+    const clipUpper = [...(outPose.rightUpperArm?.rotation ?? REST)];
+    const clipLower = [...(outPose.rightLowerArm?.rotation ?? REST)];
+    const solved = solveRightArm(direction.map((value) => value * 0.82 * (UPPER_ARM + LOWER_ARM)));
     replaceBlend(outPose, 'rightUpperArm', solved.upper, aim);
     replaceBlend(outPose, 'rightLowerArm', solved.lower, aim);
     additiveBone(outPose, 'leftUpperArm', 0, 0, 0.18 * aim);
+    aimMotion = {direction: [...direction], weight: aim, upper: clipUpper, lower: clipLower};
   }
 
   if (isSpeaker) outExpressions = tightenMouth(outExpressions, dialogue, frame, expressionWeight, intensity);
@@ -409,8 +527,8 @@ export function applyReactivity(input) {
     addExpression(outExpressions, 'relaxed', expressionWeight * 0.35 * levels.lean);
     if (isSpeaker) addExpression(outExpressions, 'blink', expressionWeight * blinkWeight(dialogue, frame, fps));
   }
-  // Eye blendshapes follow the same yaw/pitch as the head chain. Eye bones are
-  // left on the clip so a rig that has both does not look twice.
+  // Expression look-at uses blendshapes. Bone look-at avatars have no look*
+  // shapes; the stage writes leftEye/rightEye from lookYaw/lookPitch instead.
   if (headWeight > 0) {
     if (yaw > 0) addExpression(outExpressions, 'lookLeft', headWeight * (yaw / YAW_LIMIT));
     if (yaw < 0) addExpression(outExpressions, 'lookRight', headWeight * (-yaw / YAW_LIMIT));
@@ -429,19 +547,29 @@ export function applyReactivity(input) {
       nod: levels.nod,
       point: levels.point,
       lean: levels.lean,
+      ...(aimMotion ? {aim: aimMotion} : {}),
     },
   };
 }
 
+function fadeBone(pose, bone, amount) {
+  const weight = clamp01(amount);
+  const base = pose[bone]?.rotation;
+  if (weight <= 0 || !base) return;
+  const position = pose[bone].position ? [...pose[bone].position] : [0, 0, 0];
+  pose[bone] = {rotation: slerp(base, REST, weight), position};
+}
+
 /** Skip optional reactive presets the loaded avatar does not define. Authored names still fail. */
 export function resolveExpressionWeights(weights, hasExpression, authored, actorId) {
-  const applied = [];
+  const applied = new Map();
   for (const [name, weight] of Object.entries(weights)) {
-    if (hasExpression(name)) applied.push([name, weight]);
-    else if (OPTIONAL_REACTIVE_EXPRESSIONS.has(name) && !authored.has(name)) continue;
+    const resolved = resolveExpressionName(name, hasExpression);
+    if (resolved) applied.set(resolved, weight);
+    else if (OPTIONAL_REACTIVE_EXPRESSIONS.has(canonicalExpressionName(name)) && !authored.has(name)) continue;
     else throw new Error(`Avatar ${actorId} has no expression '${name}'`);
   }
-  return applied;
+  return [...applied];
 }
 
 /** Script Studio preset. `off` omits the episode block so older takes stay unchanged. */

@@ -27,7 +27,7 @@ npm run gui
 
 Open <http://127.0.0.1:18994/>. The setup command validates and imports the avatar and motion files, then writes a generic first take under `out/setup/`. `--source-vrm` describes the **motion clip's original normalized playback convention**, not the VRM version of the avatar being imported. PoseLab's older bank JSON does not record that convention; choose `0` or `1` based on how the source clip was authored. See [PoseLab input](docs/POSELAB.md).
 
-Script Studio uses the imported gesture once, then loops the idle clip. It offers camera cuts, medium/close views, a word-cued directed take, and 2–8 section storyboards. Save a local draft, preview, or render a silent MP4 with captions. Optional reactivity can look toward the camera, accent script beats, and tighten mouth shapes without replacing the PoseLab clip. See [Script Studio](docs/SCRIPT-STUDIO.md) and [Reactive motion](docs/REACTIVE-MOTION.md).
+Script Studio uses the imported gesture once, then loops the idle clip. It offers camera cuts, medium/close views, a word-cued directed take, and 2–8 section storyboards. Save a local draft, preview, or render a silent MP4 with captions. Optional reactivity can look toward the camera, accent script beats, and tighten mouth shapes without replacing the PoseLab clip. Lively pointing, a custom `Surprised` shape, and bone look-at eyes are applied when you preview or render. See [Script Studio](docs/SCRIPT-STUDIO.md) and [Reactive motion](docs/REACTIVE-MOTION.md).
 
 Render the generated first take directly from the CLI:
 

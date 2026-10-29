@@ -4,8 +4,10 @@ import {compileDialogue} from '../src/dialogue.mjs';
 import {compileEpisode, evaluateEpisodeAtFrame, validateEpisode, EPISODE_SCHEMA} from '../src/episode.mjs';
 import {createScriptEpisode, DEFAULT_SCRIPT_SETTINGS, validateScriptSettings} from '../src/script-project.mjs';
 import {studioFixture} from './script-project.test.mjs';
+import {canonicalExpressionName} from '../src/expression-names.mjs';
 import {
-  applyReactivity, lookAngles, quatYXZ, resolveExpressionWeights, rightArmHand, rotateVector, solveRightArm,
+  applyMeasuredAim, applyReactivity, boneLookEyeRotations, lookAngles, pointAimDirection, quatYXZ,
+  resolveExpressionWeights, rightArmHand, rotateVector, solveRightArm,
 } from '../src/reactive-motion.mjs';
 
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -66,27 +68,102 @@ test('point aim blends onto the clip instead of replacing it', () => {
   };
   const before = structuredClone(pose);
   const camera = {position: [0.2, 1.4, 2.2], target: [0, 1.4, 0], fov: 30};
+  const reactivity = {look: 'off', head: 0, torso: 0, arm: 0.5, expression: 0, autoBeats: false,
+    beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]};
   const applied = applyReactivity({
-    reactivity: {look: 'off', head: 0, torso: 0, arm: 0.5, expression: 0, autoBeats: false,
-      beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]},
-    pose, expressions: {happy: 0.25}, frame: 16, fps: 30, camera, previousCamera: camera,
+    reactivity, pose, expressions: {happy: 0.25}, frame: 16, fps: 30, camera, previousCamera: camera,
     actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40,
   });
   assert.deepEqual(pose, before);
   assert.equal(applied.expressions.happy, 0.25);
   assert.deepEqual(applied.pose.hips, pose.hips);
-  const base = pose.rightUpperArm.rotation;
-  const next = applied.pose.rightUpperArm.rotation;
   const qdot = (a, b) => Math.abs(a.reduce((sum, value, index) => sum + value * b[index], 0));
-  assert.ok(qdot(base, next) < 0.999);
-  assert.ok(qdot(base, next) > 0.9);
+  assert.ok(qdot(pose.rightUpperArm.rotation, applied.pose.rightUpperArm.rotation) < 0.99);
+  assert.ok(applied.motion.aim.weight > 0.7 && applied.motion.aim.weight < 1);
+  const hand = unit(rightArmHand({
+    upper: applied.pose.rightUpperArm.rotation,
+    lower: applied.pose.rightLowerArm.rotation,
+  }));
+  assert.ok(hand[2] > 0.7, `hand stayed off-axis ${hand}`);
   assert.equal(applied.motion.beat, 'point');
   assert.deepEqual(applyReactivity({
-    reactivity: {look: 'off', head: 0, torso: 0, arm: 0.5, expression: 0, autoBeats: false,
-      beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]},
-    pose: before, expressions: {happy: 0.25}, frame: 16, fps: 30, camera, previousCamera: camera,
+    reactivity, pose: before, expressions: {happy: 0.25}, frame: 16, fps: 30, camera, previousCamera: camera,
     actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40,
   }), applied);
+});
+
+test('a wide lively point stays in the forward cone and an A-pose rest does not hang', () => {
+  const wide = {position: [0.25, 1.05, 3.5], target: [0, 0.92, 0], fov: 38};
+  const direction = pointAimDirection(wide, 0, 1, 0);
+  assert.ok(dot(direction, [0, 0, 1]) > 0.94, `wide aim left the cone ${direction}`);
+  assert.ok(direction[1] > -0.05, `wide aim dropped ${direction}`);
+  const pose = {
+    rightUpperArm: {rotation: [0, 0, 0, 1], position: [0, 0, 0]},
+    rightLowerArm: {rotation: [0, 0, 0, 1], position: [0, 0, 0]},
+  };
+  const lively = applyReactivity({
+    reactivity: {look: 'camera', head: 0.78, torso: 0.42, arm: 0.62, expression: 0, autoBeats: false,
+      beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]},
+    pose, expressions: {}, frame: 16, fps: 30, camera: wide, previousCamera: wide,
+    actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40,
+  });
+  assert.ok(lively.motion.aim.weight > 0.9);
+  assert.ok(dot(lively.motion.aim.direction, [0, 0, 1]) > 0.94);
+  const livelyHand = unit(rightArmHand({
+    upper: lively.pose.rightUpperArm.rotation,
+    lower: lively.pose.rightLowerArm.rotation,
+  }));
+  assert.ok(livelyHand[2] > 0.8, `lively hand ${livelyHand}`);
+  const subtle = applyReactivity({
+    reactivity: {look: 'off', head: 0, torso: 0, arm: 0.28, expression: 0, autoBeats: false,
+      beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]},
+    pose, expressions: {}, frame: 16, fps: 30, camera: wide, previousCamera: wide,
+    actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40,
+  });
+  const qdot = (a, b) => Math.abs(a.reduce((sum, value, index) => sum + value * b[index], 0));
+  assert.ok(subtle.motion.aim.weight < 0.25);
+  assert.ok(qdot(pose.rightUpperArm.rotation, subtle.pose.rightUpperArm.rotation) > 0.95);
+  const upperRest = unit([-0.45, -0.85, 0.15]);
+  const lowerRest = unit([-0.25, -0.92, 0.2]);
+  const measured = applyMeasuredAim({
+    upper: [0, 0, 0, 1], lower: [0, 0, 0, 1], direction, weight: 1,
+    upperRest, lowerRest, upperLength: 0.27, lowerLength: 0.24,
+  });
+  const measuredHand = unit(measured.hand);
+  assert.ok(dot(measuredHand, direction) > 0.9, `A-pose hand ${measuredHand}`);
+  assert.ok(measuredHand[2] > 0.75 && measuredHand[1] > -0.2, `A-pose hand hung ${measuredHand}`);
+  assert.deepEqual(applyMeasuredAim({
+    upper: [0, 0, 0, 1], lower: [0, 0, 0, 1], direction, weight: 1,
+    upperRest, lowerRest, upperLength: 0.27, lowerLength: 0.24,
+  }), measured);
+});
+
+test('an active look fades stacked head tilt', () => {
+  const clip = quatYXZ(0.55, 0.25, 0);
+  const pose = {
+    head: {rotation: [...clip], position: [0, 0, 0]},
+    neck: {rotation: [...clip], position: [0, 0, 0]},
+  };
+  const camera = {position: [1.6, 1.5, 1.2], target: [0, 1.4, 0], fov: 32};
+  const reactivity = {look: 'camera', head: 0.78, torso: 0.42, arm: 0, expression: 0, autoBeats: false};
+  const input = {reactivity, expressions: {}, frame: 8, fps: 30, camera, previousCamera: camera,
+    actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40};
+  const stacked = applyReactivity({...input, pose});
+  const fromRest = applyReactivity({...input, pose: {}});
+  assert.deepEqual(stacked.pose.head.rotation, fromRest.pose.head.rotation);
+  const angle = (q) => 2 * Math.acos(Math.min(1, Math.abs(q[3])));
+  assert.ok(angle(stacked.pose.head.rotation) < angle(clip) * 0.8);
+  const eyes = boneLookEyeRotations(stacked.motion.lookYaw, stacked.motion.lookPitch, {
+    horizontalInner: (degrees) => degrees * 0.2,
+    horizontalOuter: (degrees) => degrees * 0.5,
+    verticalDown: (degrees) => degrees * 0.25,
+    verticalUp: (degrees) => degrees * 0.4,
+  });
+  const left = rotateVector(eyes.left, [0, 0, 1]);
+  const right = rotateVector(eyes.right, [0, 0, 1]);
+  assert.ok(left[0] > right[0]);
+  const full = boneLookEyeRotations(Math.PI / 2, 0);
+  close(angle(full.left), 10 * Math.PI / 180, 1e-4);
 });
 
 test('optional reactive expressions are skipped and authored names are not', () => {
@@ -99,6 +176,17 @@ test('optional reactive expressions are skipped and authored names are not', () 
   ), [['aa', 0.4], ['happy', 0.2]]);
   assert.throws(() => resolveExpressionWeights({happy: 0.2}, () => false, new Set(['happy']), 'a'), /happy/);
   assert.throws(() => resolveExpressionWeights({aa: 1}, () => false, new Set(), 'a'), /aa/);
+  const vrm0 = new Set(['Surprised', 'joy', 'fun', 'sorrow', 'aa']);
+  assert.deepEqual(resolveExpressionWeights(
+    {surprised: 0.4, happy: 0.2, relaxed: 0.1, sad: 0.05, lookLeft: 0.3, aa: 0.6},
+    (name) => vrm0.has(name),
+    new Set(),
+    'a',
+  ), [['Surprised', 0.4], ['joy', 0.2], ['fun', 0.1], ['sorrow', 0.05], ['aa', 0.6]]);
+  assert.equal(canonicalExpressionName('Joy'), 'happy');
+  assert.equal(canonicalExpressionName('Surprised'), 'surprised');
+  assert.equal(canonicalExpressionName('Curious'), 'Curious');
+  assert.throws(() => resolveExpressionWeights({surprised: 1}, () => false, new Set(['surprised']), 'a'), /surprised/);
 });
 
 test('reactivity is seek-stable and absent blocks match the clip', () => {
@@ -225,7 +313,7 @@ test('Script Studio still defaults to the clip and can opt into lively offsets',
   const push = directed.dialogue.captions.flatMap((caption) => caption.words)[12].endFrame + 6;
   assert.equal(directed.shots[0].performances[0].reactivity.beats[0].frame, push);
   assert.equal(directed.shots[0].performances[0].reactivity.beats[0].kind, 'point');
-  const atPush = compileEpisode(directed)(Math.min(push + 4, directed.durationFrames - 1));
+  const atPush = compileEpisode(directed)(Math.min(push + 8, directed.durationFrames - 1));
   assert.equal(atPush.actors[0].motion.beat, 'point');
   assert.ok(atPush.actors[0].pose.rightUpperArm);
   assert.equal(JSON.stringify(fixture), before);

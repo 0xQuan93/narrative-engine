@@ -7,15 +7,15 @@ Script Studio can keep playing one PoseLab gesture and then the idle loop, and l
 - **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, then loops idle. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only.
 - **Mouth:** spelling rules in `src/dialogue.mjs` pick `aa` / `ih` / `ou` / `ee` / `oh` and ramp the weight inside each cue. There is no audio file and no phoneme aligner.
 - **Camera:** cuts, medium, close, directed (creep, push, release, handheld, depth), and storyboard. None of that moved the body.
-- **Not running during a frame:** `@pixiv/three-vrm` look-at, expression look presets, and spring bones. Spring bones are left at the imported rest on purpose. Their solver keeps the previous tail position, and Remotion may draw frames out of order.
+- **Not running during a frame:** `vrm.lookAt.update()`, expression look presets as a second pass, and spring bones. Bone look-at eyes are written from the loaded range map inside the stage, once per frame. Spring bones stay at the imported rest on purpose. Their solver keeps the previous tail position, and Remotion may draw frames out of order.
 
 ## Approach
 
 Reactive state is a pure function of the frame, the clip pose, the camera, and the dialogue track (`src/reactive-motion.mjs`). The same frame always returns the same pose and expression weights. Preview and the silent MP4 both consume that result through the existing three-vrm humanoid and expression manager.
 
-This is a small CCD aim for the right arm, not three-vrm's look-at applier and not a physics spring:
+This is a small CCD aim for the right arm, plus a draw-time eye pass, not a physics spring:
 
-- three-vrm 3.5 does not ship a CCD or FABRIK solver. `VRMLookAt` can aim eyes, but only after a VRM is loaded, and a bone applier would add a second rotation on top of these offsets. Tests and CI have no avatar file, so the pose has to be knowable without one.
+- three-vrm 3.5 does not ship a CCD or FABRIK solver. `VRMLookAt` can aim eyes, but only after a VRM is loaded, and calling `lookAt.update()` would fight the head offsets and depend on a target object. The evaluator stays avatar-free. When the loaded applier type is `bone`, the stage copies that applier's range map onto `leftEye` / `rightEye` and lets `humanoid.update()` transfer them. Tests and CI have no avatar file, so the pose and the default eye map have to be knowable without one.
 - `VRMSpringBoneJoint` integrates from the previous tail. Calling it would make a frame depend on which frame ran last. Resimulating from frame 0 on every seek would still be avatar-specific and would not match the episode state under test.
 
 No new dependency is added. Remotion stays under its own license, as the readme already says.
@@ -69,17 +69,42 @@ Evaluated actors gain a `motion` summary (`intensity`, `lookYaw`, `lookPitch`, `
 
 ## What the layer drives
 
-- **Look.** Yaw and pitch, clamped, are shared across spine, chest, upper chest, neck, and head and added to the clip. `lookLeft` / `lookRight` / `lookUp` / `lookDown` expression weights follow the same angles. Eye bones are not given an extra offset, so a rig that also has those blendshapes does not look twice. Eye bones still inherit the head turn.
-- **Aim.** On `point` beats, a 12-step CCD solve aims a canonical right arm (rest direction `-X`, lengths 0.27 and 0.24) toward the camera and blends that pose with the clip by `arm`. The clip rotation is the other end of the blend, so the gesture is not replaced outright. The left arm gets a small counter roll.
+- **Look.** Yaw and pitch, clamped, are shared across spine, chest, upper chest, neck, and head. Head and neck take a smaller share than the torso chain, and that share is capped, so a nod or a PoseLab head key does not stack on top of the look. While the look is active the clip's head and neck rotations fade toward rest before the look offset is applied. `lookLeft` / `lookRight` / `lookUp` / `lookDown` weights are still written for expression look-at. On a bone look-at avatar the stage ignores those weights and writes `leftEye` / `rightEye` from the file's range map (`lookYaw` / `lookPitch` in radians, positive yaw toward +X, positive pitch looking down). `vrm.lookAt.update()` is not called.
+- **Aim.** On `point` beats the aim direction is chest-local: torso yaw already used for the look is removed, the direction is lifted slightly, then clamped to a 32° cone around +Z so a wide lens does not swing the hand to the floor or out to the side. A 12-step CCD solves a canonical right arm (rest `-X`, lengths 0.27 and 0.24) for tests and for the evaluated pose. At draw time the stage measures `rightLowerArm` and `rightHand` rest offsets and solves again, then blends onto the clip. Lively's arm gain arrives in that cone. Subtle stays a small blend. The left arm gets a small counter roll. Preset numbers are unchanged.
 - **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. Nods add `happy`, points and camera punches add `surprised`, leans add `relaxed`. Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner.
 
-Optional presets the avatar does not define are skipped (`happy`, `blink`, `lookLeft`, and the other names listed in `OPTIONAL_REACTIVE_EXPRESSIONS`). Mouth shapes required by the script, and any expression named in an authored track, still have to exist on the VRM.
+Optional presets the avatar does not define are skipped (`happy`, `blink`, `lookLeft`, and the other names in `OPTIONAL_REACTIVE_EXPRESSIONS`). Names are matched case-insensitively, and VRM 0 file presets alias to VRM 1 (`joy`/`happy`, `fun`/`relaxed`, `sorrow`/`sad`, `a`/`aa`, and the rest of the table in `src/expression-names.mjs`). A custom `Surprised` group matches `surprised`. `inspectVrm` keeps the file spellings on `expressions` and adds `canonicalExpressions` from the same table. Mouth shapes required by the script, and any expression named in an authored track, still have to exist after that lookup.
+
+Evaluated `motion` also includes `aim` while a point is active: `direction` (unit vector, stage space), `weight`, and the clip arm quaternions the stage blends from. Episode JSON does not gain a field.
 
 ## Limits
 
 - No waveform, microphone, or cloud model is read at render time. Timing comes from the script estimator, camera keys, and any cues you write into the episode.
 - Spring bones, hair, and cloth do not simulate. They stay at the imported rest so frames remain seekable.
-- The arm solve does not measure the loaded skeleton. Extreme A-poses will not put the wrist on a prop; the result is a normalized aim offset, not a contact.
-- Look uses a fixed head height, not a skinned head bone, and it does not read a VRM look-at range map.
-- VRM 0 quaternions are still flipped by `poseForVrm` at draw time. Author offsets in the VRM 1 convention the rest of the episode uses.
+- The evaluated arm solve uses canonical lengths. The stage re-solves from the loaded rest offsets, still as a normalized aim, not a contact with a prop.
+- Look uses a fixed head height, not a skinned head bone. Bone look-at range maps are read at draw time. Expression look-at uses the blendshape weights above.
+- VRM 0 quaternions and aim directions are flipped with `poseForVrm` / `axesForVrm` at draw time. Author offsets in the VRM 1 convention the rest of the episode uses.
 - Reactivity does not change caption text, camera cuts, or the PoseLab hip track.
+
+## Check a Lively take locally
+
+Setup stays on this machine. Nothing is uploaded.
+
+```bash
+npm run setup -- \
+  --vrm /path/to/your-avatar.vrm \
+  --wave /path/to/your-wave-animation.json \
+  --idle /path/to/your-idle-animation.json \
+  --source-vrm 0
+npm run gui
+```
+
+In Performance, set Reactivity to **Lively** and Amount to 100%. Use a short line that nods, leans, and points, for example `Wait. Is that it? Look!`, with Cuts or a wide camera. Apply to preview, then render.
+
+To render a saved episode from the CLI:
+
+```bash
+npm run render -- --episode out/studio/your-episode.json --out out/lively-test.mp4 --frames 0-89
+```
+
+On a VRM 0 file, a wide point should bring the right hand forward toward the lens, a custom `Surprised` shape should move on `!` and on camera punches, and bone look-at eyes should follow the lens. Head nods still play, and they no longer add on top of an active look. Spring bones stay at rest. The default Still preset still writes no `reactivity` block.
