@@ -1,5 +1,6 @@
 /** Local VRM preflight and immutable asset import; not a full glTF validator. */
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalExpressionName } from './expression-names.mjs';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -174,6 +175,7 @@ export function inspectVrm(input) {
     humanoidBoneCount: boneNames.size,
     humanoidBones: [...boneNames].sort(),
     expressions: [...new Set(expressionNames)].sort(),
+    canonicalExpressions: [...new Set(expressionNames.map((name) => canonicalExpressionName(name)))].sort(),
     nodeCount: lists.nodes.length,
     meshCount: lists.meshes.length,
     textureCount: lists.textures.length,

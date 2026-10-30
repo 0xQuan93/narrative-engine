@@ -1,11 +1,13 @@
 import { compileEpisode, validateEpisode } from './episode.mjs';
 import { compileDialogue } from './dialogue.mjs';
 import { compileCameraMoves } from './camera-language.mjs';
+import { reactivityPreset } from './reactive-motion.mjs';
 
 export const DEFAULT_SCRIPT_SETTINGS = Object.freeze({
   text: 'Welcome to the studio. This is a short first take using your avatar and your motion clips.',
   wordsPerMinute: 150, mouthStrength: 0.7, motion: 'wave-idle', camera: 'cuts',
   format: 'landscape', revealWordIndex: null, shotCameras: [],
+  reactivity: 'off', reactivityAmount: 1,
 });
 export function validateScriptSettings(value) {
   const required = ['text', 'wordsPerMinute', 'mouthStrength', 'motion', 'camera'];
@@ -18,10 +20,12 @@ export function validateScriptSettings(value) {
   if (value.format !== undefined && !['landscape', 'portrait'].includes(value.format)) throw new Error('Unsupported video format');
   if (value.revealWordIndex !== undefined && value.revealWordIndex !== null && (!Number.isSafeInteger(value.revealWordIndex) || value.revealWordIndex < 0)) throw new Error('Reveal cue must be a word index');
   if (value.shotCameras !== undefined && (!Array.isArray(value.shotCameras) || value.shotCameras.length > 8 || value.shotCameras.some((camera) => !['wide', 'medium', 'close'].includes(camera)))) throw new Error('Shot cameras must be up to eight wide, medium or close choices');
+  if (value.reactivity !== undefined && !['off', 'subtle', 'lively'].includes(value.reactivity)) throw new Error('Unsupported reactivity preset');
+  if (value.reactivityAmount !== undefined && (!Number.isFinite(value.reactivityAmount) || value.reactivityAmount < 0 || value.reactivityAmount > 1)) throw new Error('Reactivity amount must be 0–1');
   return { ...value, text: value.text.trim() };
 }
 
-/** Script timing drives an immutable recipe; body movement samples the authored bank only. */
+/** Script timing drives an immutable recipe. PoseLab clips stay the body; reactivity is an optional offset. */
 export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimumSeconds = 12, holdFinalCaption = false }) {
   settings = validateScriptSettings(settings);
   if (!Number.isSafeInteger(minimumSeconds) || minimumSeconds < 1 || minimumSeconds > 90 || typeof holdFinalCaption !== 'boolean') {
@@ -65,6 +69,7 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
     }
     cuts.push(durationFrames);
   }
+  let revealFrame = null;
   const shots = cuts.slice(0, -1).map((startFrame, index) => {
     const count = cuts[index + 1] - startFrame;
     const shotCamera = settings.camera === 'storyboard' ? (settings.shotCameras?.[index] ?? ['wide', 'medium', 'close'][index % 3]) : null;
@@ -79,7 +84,8 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
     const cueIndex = settings.revealWordIndex ?? Math.floor(words.length * 0.45);
     if (cueIndex >= words.length) throw new Error('Reveal cue no longer matches the script; select a word again');
     const cue = words[cueIndex];
-    const pushStart = cue.endFrame + 6;
+    revealFrame = cue.endFrame + 6;
+    const pushStart = revealFrame;
     const pushEnd = pushStart + 14;
     if (pushEnd + 32 >= durationFrames) throw new Error('Choose an earlier reveal word so the camera has room to hold and release');
     const move = (startFrame, endFrame, easing, position, target, fov) => ({startFrame, endFrame, easing,
@@ -97,6 +103,22 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
     const {motion, focusMotion} = compileCameraMoves({base: camera, durationFrames, moves});
     camera.motion = motion;
     camera.depthOfField.focusMotion = focusMotion;
+  }
+  const preset = reactivityPreset(settings.reactivity ?? 'off', settings.reactivityAmount ?? 1);
+  if (preset) {
+    for (const shot of shots) {
+      const beats = [];
+      if (revealFrame !== null && revealFrame >= shot.startFrame && revealFrame < shot.startFrame + shot.durationFrames) {
+        beats.push({ frame: revealFrame - shot.startFrame, kind: 'point', strength: 0.85, duration: 16 });
+      }
+      for (const performance of shot.performances) {
+        performance.reactivity = {
+          ...preset,
+          ...(firstIdle > 0 ? { armDelayFrames: Math.min(firstIdle, durationFrames) } : {}),
+          ...(beats.length ? { beats } : {}),
+        };
+      }
+    }
   }
   const episode = { schema: 'narrative-episode/0.1', fps, durationFrames, actors: [structuredClone(actor)], shots, dialogue };
   if (settings.camera === 'directed') episode.environment = 'depth-studio';

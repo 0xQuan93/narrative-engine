@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ASSET_SCHEMA, inspectVrm, importVrm } from '../src/assets.mjs';
+import { canonicalExpressionName } from '../src/expression-names.mjs';
 
 const required = ['hips', 'spine', 'head', ...['left', 'right'].flatMap((side) =>
   ['UpperLeg', 'LowerLeg', 'Foot', 'UpperArm', 'LowerArm', 'Hand'].map((part) => side + part))];
@@ -46,10 +47,30 @@ test('summarizes VRM0 and VRM1 with bounded metadata and embedded texture dimens
   const zero = inspectVrm(glb(fixture()));
   assert.equal(zero.vrmVersion, '0.0'); assert.equal(zero.extension, 'VRM');
   assert.equal(zero.humanoidBoneCount, 15); assert.equal(zero.meshCount, 1);
-  assert.deepEqual(zero.expressions, ['joy']); assert.deepEqual(zero.imageDimensions, [[32, 16]]);
+  assert.deepEqual(zero.expressions, ['joy']);
+  assert.deepEqual(zero.canonicalExpressions, ['happy']);
+  assert.deepEqual(zero.canonicalExpressions, zero.expressions.map((name) => canonicalExpressionName(name)));
+  assert.deepEqual(zero.imageDimensions, [[32, 16]]);
   assert.equal(zero.totalImagePixels, 512); assert.equal(zero.meta.ignored, undefined);
   const one = inspectVrm(glb(fixture(1)));
   assert.equal(one.vrmVersion, '1.0'); assert.deepEqual(one.expressions, ['Curious', 'happy']);
+  assert.deepEqual(one.canonicalExpressions, ['Curious', 'happy']);
+});
+
+test('canonical expressions share VRM0 aliases and custom Surprised with resolve', () => {
+  const value = fixture();
+  value.json.extensions.VRM.blendShapeMaster.blendShapeGroups = [
+    { presetName: 'joy', name: 'Smile' },
+    { presetName: 'fun', name: 'Fun' },
+    { presetName: 'sorrow', name: 'Sorrow' },
+    { presetName: 'a', name: 'A' },
+    { presetName: 'unknown', name: 'Surprised' },
+    { presetName: 'unknown', name: 'Curious' },
+  ];
+  const summary = inspectVrm(glb(value));
+  assert.deepEqual(summary.expressions, ['Curious', 'Surprised', 'a', 'fun', 'joy', 'sorrow']);
+  assert.deepEqual(summary.canonicalExpressions, ['Curious', 'aa', 'happy', 'relaxed', 'sad', 'surprised']);
+  assert.deepEqual(summary.canonicalExpressions, [...new Set(summary.expressions.map((name) => canonicalExpressionName(name)))].sort());
 });
 
 test('recognizes JPEG dimensions without decoding image data', () => {

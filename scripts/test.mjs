@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Direct imports also work on hosts whose node --test worker spawning is restricted.
 await import('../tests/episode.test.mjs');
+await import('../tests/reactive-motion.test.mjs');
 await import('../tests/camera-language.test.mjs');
 await import('../tests/assets.test.mjs');
 await import('../tests/jobs.test.mjs');

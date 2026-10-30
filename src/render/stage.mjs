@@ -2,16 +2,81 @@ import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {VRMLoaderPlugin, VRMUtils} from '@pixiv/three-vrm';
 import {compileEpisode} from '../episode.mjs';
-import {poseForVrm} from '../vrm-pose.mjs';
+import {axesForVrm, poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
+import {applyMeasuredAim, boneLookEyeRotations, resolveExpressionWeights} from '../reactive-motion.mjs';
 import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
 import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {BokehPass} from 'three/addons/postprocessing/BokehPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
-// No clocks, animation mixers, random blinks, spring physics or requestAnimationFrame.
+// No clocks, animation mixers, random blinks, spring integration, or requestAnimationFrame.
+// Spring bones stay at their imported rest: the solver carries the previous tail
+// and would change pixels when Remotion seeks out of order. vrm.lookAt.update is
+// not called. Bone look-at avatars get leftEye/rightEye from the loaded range map
+// before humanoid.update, which copies normalized bones onto the raw rig. A second
+// update would stomp those eyes. Expression look-at stays on blendshape weights.
+// Pointing is re-solved from the loaded arm rest so an A-pose does not stay out
+// to the side. Actor slots are 1.7m apart, matching src/reactive-motion.mjs.
 // All mutable avatar state is reset before each absolute-frame evaluation.
+
+const LOOK_BLENDSHAPES = ['lookUp', 'lookDown', 'lookLeft', 'lookRight'];
+
+function quatForMeta(quaternion, metaVersion) {
+  return poseForVrm({hips: {rotation: quaternion}}, metaVersion).hips.rotation;
+}
+
+function applyLoadedAim(vrm, motion, metaVersion) {
+  const aim = motion?.aim;
+  if (!aim || aim.weight <= 0) return;
+  const lower = vrm.humanoid.getNormalizedBoneNode('rightLowerArm');
+  const hand = vrm.humanoid.getNormalizedBoneNode('rightHand');
+  if (!lower || !hand) return;
+  const upperRest = [lower.position.x, lower.position.y, lower.position.z];
+  const lowerRest = [hand.position.x, hand.position.y, hand.position.z];
+  const upperLength = Math.hypot(...upperRest);
+  const lowerLength = Math.hypot(...lowerRest);
+  if (upperLength < 1e-4 || lowerLength < 1e-4) return;
+  const aimed = applyMeasuredAim({
+    upper: quatForMeta(aim.upper, metaVersion),
+    lower: quatForMeta(aim.lower, metaVersion),
+    direction: axesForVrm(aim.direction, metaVersion),
+    weight: aim.weight,
+    upperRest,
+    lowerRest,
+    upperLength,
+    lowerLength,
+  });
+  vrm.humanoid.setNormalizedPose({
+    rightUpperArm: {rotation: aimed.upper},
+    rightLowerArm: {rotation: aimed.lower},
+  });
+}
+
+function applyBoneLook(vrm, motion, metaVersion) {
+  const applier = vrm.lookAt?.applier;
+  if (applier?.constructor?.type !== 'bone' || !motion) return false;
+  if (!applier.rangeMapHorizontalInner || Math.hypot(motion.lookYaw ?? 0, motion.lookPitch ?? 0) < 1e-6) return true;
+  const eyes = boneLookEyeRotations(motion.lookYaw, motion.lookPitch, {
+    horizontalInner: (value) => applier.rangeMapHorizontalInner.map(value),
+    horizontalOuter: (value) => applier.rangeMapHorizontalOuter.map(value),
+    verticalDown: (value) => applier.rangeMapVerticalDown.map(value),
+    verticalUp: (value) => applier.rangeMapVerticalUp.map(value),
+  });
+  vrm.humanoid.setNormalizedPose({
+    leftEye: {rotation: quatForMeta(eyes.left, metaVersion)},
+    rightEye: {rotation: quatForMeta(eyes.right, metaVersion)},
+  });
+  return true;
+}
+
+function withoutLookBlendshapes(expressions) {
+  const next = {...expressions};
+  for (const name of LOOK_BLENDSHAPES) delete next[name];
+  return next;
+}
+
 export async function createStage({canvas, width, height, episode, assets, assetUrl}) {
   const evaluateFrame = compileEpisode(episode);
   const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false,
@@ -107,8 +172,13 @@ export async function createStage({canvas, width, height, episode, assets, asset
           throw new Error(`Avatar ${actor.id} needs the '${name}' mouth expression for script animation`);
         }
       }
+      const authored = new Set();
+      for (const shot of episode.shots) for (const performance of shot.performances) {
+        if (performance.actorId !== actor.id) continue;
+        for (const key of performance.expressions ?? []) for (const name of Object.keys(key.values)) authored.add(name);
+      }
       // Frozen secondary bones retain their imported rest transforms.
-      avatars.set(actor.id, {vrm, wrapper, rest});
+      avatars.set(actor.id, {vrm, wrapper, rest, authored});
     }
   } catch (error) {
     dispose(); throw error;
@@ -129,7 +199,7 @@ export async function createStage({canvas, width, height, episode, assets, asset
     camera.rotateZ(THREE.MathUtils.degToRad(state.camera.rollDegrees ?? 0));
     camera.updateProjectionMatrix();
     for (const actor of state.actors) {
-      const {vrm, wrapper, rest} = avatars.get(actor.id);
+      const {vrm, wrapper, rest, authored} = avatars.get(actor.id);
       wrapper.visible = active.has(actor.id);
       for (const entry of rest) {
         entry.object.position.copy(entry.position);
@@ -137,16 +207,21 @@ export async function createStage({canvas, width, height, episode, assets, asset
         entry.object.scale.copy(entry.scale);
       }
       vrm.humanoid.resetNormalizedPose();
-      vrm.humanoid.setNormalizedPose(poseForVrm(actor.pose, vrm.meta.metaVersion));
+      const metaVersion = vrm.meta.metaVersion;
+      vrm.humanoid.setNormalizedPose(poseForVrm(actor.pose, metaVersion));
+      applyLoadedAim(vrm, actor.motion, metaVersion);
+      const boneEyes = applyBoneLook(vrm, actor.motion, metaVersion);
       vrm.humanoid.update();
       vrm.nodeConstraintManager?.update();
+      const expressions = boneEyes ? withoutLookBlendshapes(actor.expressions) : actor.expressions;
+      const weights = resolveExpressionWeights(
+        expressions,
+        (name) => Boolean(vrm.expressionManager?.getExpression(name)),
+        authored,
+        actor.id,
+      );
       vrm.expressionManager?.resetValues();
-      for (const [name, weight] of Object.entries(actor.expressions)) {
-        if (!vrm.expressionManager?.getExpression(name)) {
-          throw new Error(`Avatar ${actor.id} has no expression '${name}'`);
-        }
-        vrm.expressionManager.setValue(name, weight);
-      }
+      for (const [name, weight] of weights) vrm.expressionManager.setValue(name, weight);
       vrm.expressionManager?.update();
     }
     scene.updateMatrixWorld(true);
