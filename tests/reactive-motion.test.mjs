@@ -6,8 +6,8 @@ import {createScriptEpisode, DEFAULT_SCRIPT_SETTINGS, validateScriptSettings} fr
 import {studioFixture} from './script-project.test.mjs';
 import {canonicalExpressionName} from '../src/expression-names.mjs';
 import {
-  applyMeasuredAim, applyReactivity, boneLookEyeRotations, lookAngles, pointAimDirection, quatYXZ,
-  resolveExpressionWeights, rightArmHand, rotateVector, solveRightArm,
+  applyMeasuredAim, applyReactivity, boneLookEyeRotations, lookAngles, pointAimDirection, pointHandRotations,
+  quatYXZ, resolveExpressionWeights, rightArmHand, rotateVector, solveRightArm,
 } from '../src/reactive-motion.mjs';
 
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -136,6 +136,33 @@ test('a wide lively point stays in the forward cone and an A-pose rest does not 
     upper: [0, 0, 0, 1], lower: [0, 0, 0, 1], direction, weight: 1,
     upperRest, lowerRest, upperLength: 0.27, lowerLength: 0.24,
   }), measured);
+});
+
+test('a point extends the arm and curls the hand into a finger point', () => {
+  const lengths = 0.27 + 0.24;
+  const solved = solveRightArm([0, 0.02, 1].map((value) => value * 0.96 * lengths / Math.hypot(0, 0.02, 1)));
+  const hand = rightArmHand(solved);
+  assert.ok(Math.hypot(...hand) > 0.9 * lengths, `reach ${Math.hypot(...hand)}`);
+  assert.ok(dot(unit(hand), [0, 0, 1]) > 0.9);
+  const fingers = pointHandRotations();
+  const index = unit(rotateVector(fingers.rightIndexProximal, [-1, 0, 0]));
+  const middle = unit(rotateVector(fingers.rightMiddleProximal, [-1, 0, 0]));
+  const thumb = unit(rotateVector(fingers.rightHand, [0, 0, 1]));
+  assert.ok(dot(index, [-1, 0, 0]) > 0.98, `index curled ${index}`);
+  assert.ok(middle[1] < -0.7, `middle did not curl into the palm ${middle}`);
+  assert.ok(thumb[1] > 0.4, `thumb hung down ${thumb}`);
+  const wide = {position: [0.25, 1.05, 3.5], target: [0, 0.92, 0], fov: 38};
+  const applied = applyReactivity({
+    reactivity: {look: 'off', head: 0, torso: 0, arm: 0.62, expression: 0, autoBeats: false,
+      beats: [{frame: 8, kind: 'point', strength: 1, duration: 16}]},
+    pose: {}, expressions: {}, frame: 16, fps: 30, camera: wide, previousCamera: wide,
+    actorIndex: 0, actorCount: 1, shotStart: 0, shotEnd: 40,
+  });
+  const posedIndex = unit(rotateVector(applied.pose.rightIndexProximal.rotation, [-1, 0, 0]));
+  const posedMiddle = unit(rotateVector(applied.pose.rightMiddleProximal.rotation, [-1, 0, 0]));
+  assert.ok(dot(posedIndex, [-1, 0, 0]) > 0.95);
+  assert.ok(posedMiddle[1] < -0.6);
+  assert.ok(rotateVector(applied.pose.rightHand.rotation, [0, 0, 1])[1] > 0.35);
 });
 
 test('an active look fades stacked head tilt', () => {
@@ -273,6 +300,49 @@ test('mouth coupling keeps zero expression identical and tightens a vowel when e
   assert.equal(blended, true);
   const end = dialogue.captions.at(-1).words.at(-1).endFrame + 1;
   assert.ok(shapedEval(Math.min(end, 59)).actors[0].expressions.blink > 0);
+});
+
+test('beats and intensity cues are shot-local when the shot starts after frame 0', () => {
+  const rest = {duration: 2, keyframes: [{time: 0, pose: {}}, {time: 2, pose: {}}]};
+  const camera = {position: [0, 1.5, 3], target: [0, 1.4, 0], fov: 32};
+  const make = (beatFrame) => ({
+    schema: EPISODE_SCHEMA, fps: 30, durationFrames: 180,
+    actors: [{id: 'a', assetId: 'synthetic'}],
+    shots: [
+      {id: 'early', startFrame: 0, durationFrames: 90, camera, performances: [
+        {actorId: 'a', sequence: rest},
+      ]},
+      {id: 'later', startFrame: 90, durationFrames: 90, camera, performances: [{
+        actorId: 'a', sequence: rest,
+        reactivity: {
+          look: 'off', head: 0, torso: 0, arm: 1, expression: 0, autoBeats: false,
+          beats: [{frame: beatFrame, kind: 'point', strength: 1, duration: 16}],
+          intensityCues: [{frame: beatFrame, intensity: 1, duration: 8}],
+        },
+      }]},
+    ],
+  });
+  const local = make(10);
+  validateEpisode(local);
+  const during = evaluateEpisodeAtFrame(local, 104);
+  assert.equal(during.shotId, 'later');
+  assert.equal(during.actors[0].motion.beat, 'point');
+  assert.ok(during.actors[0].motion.point > 0.7);
+  assert.ok(during.actors[0].motion.intensity > 0.9);
+  assert.equal(evaluateEpisodeAtFrame(local, 14).actors[0].motion, undefined);
+  assert.notEqual(evaluateEpisodeAtFrame(local, 90).actors[0].motion.beat, 'point');
+  assert.throws(() => validateEpisode(make(100)), /frame/);
+  const dialogue = compileDialogue({text: 'Wow!', actorId: 'a', fps: 30, wordsPerMinute: 160, mouthStrength: 0.7, startFrame: 96});
+  const spoken = make(0);
+  spoken.durationFrames = Math.max(180, dialogue.durationFrames);
+  spoken.shots[1].durationFrames = spoken.durationFrames - 90;
+  spoken.dialogue = dialogue;
+  spoken.shots[1].performances[0].reactivity = {look: 'off', head: 0, torso: 0, arm: 0, expression: 0};
+  validateEpisode(spoken);
+  const word = dialogue.captions[0].words[0].startFrame;
+  assert.ok(word >= 96);
+  assert.equal(evaluateEpisodeAtFrame(spoken, word + 7).actors[0].motion.beat, 'point');
+  assert.notEqual(evaluateEpisodeAtFrame(spoken, word - 90).actors[0].motion?.beat, 'point');
 });
 
 test('malformed reactivity is rejected and does not disturb the source episode', () => {

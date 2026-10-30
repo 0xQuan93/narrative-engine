@@ -49,6 +49,7 @@ const LOOK_BONES = Object.freeze([
 const HEAD_CHANNEL_CAP = 0.45;
 const AIM_CONE = 32 * Math.PI / 180;
 const AIM_UP_BIAS = 0.08;
+const AIM_REACH = 0.96;
 const AIM_BLEND_START = 0.18;
 const AIM_BLEND_SPAN = 0.42;
 const TORSO_YAW_SHARE = LOOK_BONES.filter(([, channel]) => channel === 'torso').reduce((sum, [, , share]) => sum + share, 0);
@@ -284,12 +285,43 @@ function aimBlend(raw) {
   return t * t * (3 - 2 * t);
 }
 
+function fingerCurl(angle) {
+  return quatFromAxisAngle([0, 0, 1], angle);
+}
+
+/**
+ * Local point pose in VRM 1 axes. Index stays extended, the other fingers curl
+ * into the palm (-Y), and the wrist rolls so the thumb lifts instead of hanging.
+ * Missing finger bones are skipped when the pose is applied.
+ */
+export function pointHandRotations() {
+  const curl = fingerCurl;
+  return {
+    rightHand: quatFromAxisAngle([1, 0, 0], -0.55),
+    rightThumbMetacarpal: normalizeQuat(mul(curl(0.45), quatFromAxisAngle([0, 1, 0], 0.35))),
+    rightThumbProximal: curl(0.55),
+    rightThumbDistal: curl(0.4),
+    rightIndexProximal: curl(0.12),
+    rightIndexIntermediate: curl(0.08),
+    rightIndexDistal: curl(0.05),
+    rightMiddleProximal: curl(1.15),
+    rightMiddleIntermediate: curl(1.25),
+    rightMiddleDistal: curl(0.85),
+    rightRingProximal: curl(1.25),
+    rightRingIntermediate: curl(1.35),
+    rightRingDistal: curl(0.9),
+    rightLittleProximal: curl(1.3),
+    rightLittleIntermediate: curl(1.4),
+    rightLittleDistal: curl(0.95),
+  };
+}
+
 /** Blend a clip arm toward a measured-rest solve. Directions are in one bone space. */
 export function applyMeasuredAim({
   upper, lower, direction, weight,
   upperRest, lowerRest, upperLength, lowerLength,
 }) {
-  const reach = 0.82 * (upperLength + lowerLength);
+  const reach = AIM_REACH * (upperLength + lowerLength);
   const solved = solveRightArm(direction.map((value) => value * reach), {
     upperRest, lowerRest, upperLength, lowerLength,
   });
@@ -348,6 +380,11 @@ function derivedBeats(dialogue, shotStart, shotEnd) {
     else if (sentenceStart(words, index)) beats.push({frame: word.startFrame, kind: 'nod', strength: 0.7, duration: 10});
   });
   return beats;
+}
+
+function episodeTimed(items, shotStart) {
+  if (!items?.length) return [];
+  return items.map((item) => ({...item, frame: item.frame + shotStart}));
 }
 
 function beatLevels(frame, beats) {
@@ -471,12 +508,13 @@ export function applyReactivity(input) {
     pitch = clamp(angles.pitch, -PITCH_LIMIT, PITCH_LIMIT);
   }
 
-  const explicit = (reactivity.beats ?? []).filter((beat) => beat.frame >= shotStart && beat.frame < shotEnd);
+  const explicit = episodeTimed(reactivity.beats, shotStart)
+    .filter((beat) => beat.frame >= shotStart && beat.frame < shotEnd);
   const beats = reactivity.autoBeats === false ? explicit : [...derivedBeats(dialogue, shotStart, shotEnd), ...explicit];
   const levels = beatLevels(frame, beats);
   const punch = cameraPunch(camera, previousCamera);
   const spoken = isSpeaker ? wordEnergy(dialogueState, frame) : 0;
-  const marked = cueLevel(frame, reactivity.intensityCues ?? []);
+  const marked = cueLevel(frame, episodeTimed(reactivity.intensityCues, shotStart));
   const handheld = clamp((handheldStrength ?? 0) / 1.5, 0, 1);
   const intensity = clamp01(Math.max(punch, marked, spoken) * 0.92 + handheld * 0.2);
 
@@ -513,9 +551,10 @@ export function applyReactivity(input) {
     const direction = pointAimDirection(camera, actorIndex, actorCount, torsoYaw);
     const clipUpper = [...(outPose.rightUpperArm?.rotation ?? REST)];
     const clipLower = [...(outPose.rightLowerArm?.rotation ?? REST)];
-    const solved = solveRightArm(direction.map((value) => value * 0.82 * (UPPER_ARM + LOWER_ARM)));
+    const solved = solveRightArm(direction.map((value) => value * AIM_REACH * (UPPER_ARM + LOWER_ARM)));
     replaceBlend(outPose, 'rightUpperArm', solved.upper, aim);
     replaceBlend(outPose, 'rightLowerArm', solved.lower, aim);
+    for (const [bone, rotation] of Object.entries(pointHandRotations())) replaceBlend(outPose, bone, rotation, aim);
     additiveBone(outPose, 'leftUpperArm', 0, 0, 0.18 * aim);
     aimMotion = {direction: [...direction], weight: aim, upper: clipUpper, lower: clipLower};
   }
@@ -619,7 +658,7 @@ function timedList(value, path, shotStart, shotEnd, fields, required) {
 }
 
 /** Validate one performance's reactivity block. Absent means the clip plays unchanged. */
-export function validateReactivity(value, path, {shotStart, shotDuration, episodeDuration}) {
+export function validateReactivity(value, path, {shotDuration, episodeDuration}) {
   plainObject(value, path, [
     'look', 'interest', 'head', 'torso', 'arm', 'expression', 'autoBeats', 'armDelayFrames', 'beats', 'intensityCues',
   ], ['look']);
@@ -633,10 +672,9 @@ export function validateReactivity(value, path, {shotStart, shotDuration, episod
   }
   if (own(value, 'autoBeats') && typeof value.autoBeats !== 'boolean') fail(`${path}.autoBeats`, 'expected a boolean');
   if (own(value, 'armDelayFrames')) finite(value.armDelayFrames, `${path}.armDelayFrames`, 0, episodeDuration, true);
-  const shotEnd = shotStart + shotDuration;
-  if (own(value, 'beats')) timedList(value.beats, `${path}.beats`, shotStart, shotEnd, ['frame', 'kind', 'strength', 'duration'], ['frame', 'kind']);
+  if (own(value, 'beats')) timedList(value.beats, `${path}.beats`, 0, shotDuration, ['frame', 'kind', 'strength', 'duration'], ['frame', 'kind']);
   if (own(value, 'intensityCues')) {
-    timedList(value.intensityCues, `${path}.intensityCues`, shotStart, shotEnd, ['frame', 'intensity', 'duration'], ['frame', 'intensity']);
+    timedList(value.intensityCues, `${path}.intensityCues`, 0, shotDuration, ['frame', 'intensity', 'duration'], ['frame', 'intensity']);
   }
   return value;
 }

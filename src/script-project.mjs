@@ -109,7 +109,7 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
     for (const shot of shots) {
       const beats = [];
       if (revealFrame !== null && revealFrame >= shot.startFrame && revealFrame < shot.startFrame + shot.durationFrames) {
-        beats.push({ frame: revealFrame, kind: 'point', strength: 0.85, duration: 16 });
+        beats.push({ frame: revealFrame - shot.startFrame, kind: 'point', strength: 0.85, duration: 16 });
       }
       for (const performance of shot.performances) {
         performance.reactivity = {
