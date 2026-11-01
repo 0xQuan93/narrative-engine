@@ -49,6 +49,15 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXPRESSION = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const REST_ROTATION = [0, 0, 0, 1];
 const REST_POSITION = [0, 0, 0];
+
+/**
+ * PoseLab's AnimationMixer crossfades a restart instead of seeking to frame 0.
+ * `playAnimation` fades in over 0.3s. A finished one-shot fades into idle over
+ * 0.5s. `crossFadeTo(..., warp=false)` uses a linear weight, so the two clips
+ * overlap without stretching time. See poselabstudio `src/three/animationManager.ts`.
+ */
+export const LOOP_CROSSFADE_SECONDS = 0.3;
+export const IDLE_RESTART_SECONDS = 0.5;
 const own = (value, key) => Object.hasOwn(value, key);
 const fail = (path, message) => { throw new TypeError(`${path}: ${message}`); };
 
@@ -110,8 +119,13 @@ function pose(value, path) {
 }
 
 function sequence(value, path) {
-  object(value, path, ['duration', 'keyframes']);
+  object(value, path, ['duration', 'keyframes', 'loop', 'loopFade'], ['duration', 'keyframes']);
   number(value.duration, `${path}.duration`, Number.MIN_VALUE);
+  if (own(value, 'loop') && typeof value.loop !== 'boolean') fail(`${path}.loop`, 'expected a boolean');
+  if (own(value, 'loopFade')) {
+    if (value.loop !== true) fail(`${path}.loopFade`, 'only allowed when loop is true');
+    number(value.loopFade, `${path}.loopFade`, 0, Math.min(2, value.duration / 2));
+  }
   array(value.keyframes, `${path}.keyframes`, 1);
   let previousTime = -Infinity;
   const ids = new Set();
@@ -343,8 +357,9 @@ function slerp(left, right, t) {
   return normalized(a.map((v, i) => v * weightA + b[i] * weightB));
 }
 
-function evaluatePose(sequence, seconds) {
-  const [left, right, fraction] = interval(sequence.keyframes, seconds, 'time');
+function sampleSequence(sequence, seconds) {
+  const time = Math.min(Math.max(seconds, 0), sequence.duration);
+  const [left, right, fraction] = interval(sequence.keyframes, time, 'time');
   const amount = ease(fraction, left.easing);
   const bones = [...new Set(sequence.keyframes.flatMap((key) => Object.keys(key.pose)))].sort();
   return Object.fromEntries(bones.map((bone) => {
@@ -357,6 +372,54 @@ function evaluatePose(sequence, seconds) {
       position: positionA.map((v, i) => lerp(v, positionB[i], amount)),
     }];
   }));
+}
+
+/** Linear pose blend, matching AnimationAction.crossFadeTo with warp off. */
+export function blendPoses(left, right, weight) {
+  const t = Math.min(1, Math.max(0, weight));
+  const bones = [...new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])].sort();
+  return Object.fromEntries(bones.map((bone) => {
+    const a = left?.[bone] ?? {};
+    const b = right?.[bone] ?? {};
+    const positionA = a.position ?? REST_POSITION;
+    const positionB = b.position ?? REST_POSITION;
+    return [bone, {
+      rotation: slerp(a.rotation ?? REST_ROTATION, b.rotation ?? REST_ROTATION, t),
+      position: positionA.map((v, i) => lerp(v, positionB[i], t)),
+    }];
+  }));
+}
+
+/**
+ * Seek-safe loop. The first pass plays straight until `duration - fade`.
+ * Each seam then crossfades the end of the clip into a copy that has already
+ * started at time 0, and the survivor continues from `fade`. The same time
+ * always returns the same pose.
+ */
+export function evaluateLoopingPose(sequence, seconds, fadeSeconds = LOOP_CROSSFADE_SECONDS) {
+  const duration = sequence.duration;
+  const fade = Math.min(Math.max(fadeSeconds, 0), duration / 2);
+  if (!(fade > 0) || !(duration > 0) || seconds <= 0) return sampleSequence(sequence, Math.max(0, seconds));
+  const intro = duration - fade;
+  if (seconds <= intro) return sampleSequence(sequence, seconds);
+  const period = intro;
+  const since = seconds - intro;
+  let into = since - Math.floor(since / period) * period;
+  if (into >= period) into -= period;
+  if (into <= fade) {
+    const amount = into / fade;
+    return blendPoses(
+      sampleSequence(sequence, intro + into),
+      sampleSequence(sequence, into),
+      amount,
+    );
+  }
+  return sampleSequence(sequence, fade + (into - fade));
+}
+
+function evaluatePose(sequence, seconds) {
+  if (sequence.loop) return evaluateLoopingPose(sequence, seconds, sequence.loopFade ?? LOOP_CROSSFADE_SECONDS);
+  return sampleSequence(sequence, seconds);
 }
 
 function evaluateExpressions(keys, localFrame) {

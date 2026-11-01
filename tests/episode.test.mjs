@@ -252,6 +252,44 @@ test('invalid recipes and unsupported fields fail explicitly', () => {
   for (const bad of [null, [], 'episode']) assert.throws(() => validateEpisode(bad), /plain object/);
 });
 
+test('a looping clip crossfades the seam and seeks in any order', () => {
+  const episode = fixture();
+  episode.fps = 30;
+  episode.durationFrames = 90;
+  episode.shots[0].durationFrames = 90;
+  const sequence = episode.shots[0].performances[0].sequence;
+  sequence.duration = 2;
+  sequence.loop = true;
+  sequence.keyframes = [
+    {time: 0, pose: {hips: {position: [0, 0, 0]}}, easing: 'linear'},
+    {time: 2, pose: {hips: {position: [0, 1, 0]}}, easing: 'linear'},
+  ];
+  const y = (frame) => evaluateEpisodeAtFrame(episode, frame).actors[0].pose.hips.position[1];
+  const gap = 1;
+  const steps = [];
+  for (let frame = 45; frame <= 75; frame += 1) steps.push(Math.abs(y(frame) - y(frame - 1)));
+  assert.ok(Math.max(...steps) < gap * 0.25, `seam step ${Math.max(...steps)}`);
+  assert.ok(Math.abs(y(51) - y(50)) < 0.05);
+  const sequential = Array.from({length: 90}, (_, frame) => evaluateEpisodeAtFrame(episode, frame));
+  for (const frame of [70, 51, 60, 0, 89, 52]) {
+    assert.deepEqual(evaluateEpisodeAtFrame(episode, frame), sequential[frame]);
+  }
+  const held = fixture();
+  held.fps = 30;
+  held.durationFrames = 90;
+  held.shots[0].durationFrames = 90;
+  held.shots[0].performances[0].sequence.keyframes = sequence.keyframes;
+  held.shots[0].performances[0].sequence.duration = 2;
+  assert.equal(evaluateEpisodeAtFrame(held, 80).actors[0].pose.hips.position[1], 1);
+  const orphan = fixture();
+  orphan.shots[0].performances[0].sequence.loopFade = 0.2;
+  assert.throws(() => validateEpisode(orphan), /loopFade/);
+  const bad = fixture();
+  bad.shots[0].performances[0].sequence.loop = true;
+  bad.shots[0].performances[0].sequence.loopFade = 1.5;
+  assert.throws(() => validateEpisode(bad), /loopFade/);
+});
+
 test('overlapping shots and noninteger/out-of-range frame requests fail', () => {
   const episode = fixture();
   episode.durationFrames = 42;

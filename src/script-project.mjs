@@ -1,4 +1,4 @@
-import { compileEpisode, validateEpisode } from './episode.mjs';
+import { blendPoses, compileEpisode, evaluateLoopingPose, IDLE_RESTART_SECONDS, LOOP_CROSSFADE_SECONDS, validateEpisode } from './episode.mjs';
 import { compileDialogue } from './dialogue.mjs';
 import { compileCameraMoves } from './camera-language.mjs';
 import { reactivityPreset } from './reactive-motion.mjs';
@@ -47,11 +47,19 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
     const durationFrames = Math.ceil(sequence.duration * fps) + 1;
     return compileEpisode({ schema: 'narrative-episode/0.1', fps, durationFrames, actors: [actor], shots: [{ id: 'source', startFrame: 0, durationFrames, camera: cameras[0], performances: [{ actorId: actor.id, sequence }] }] });
   }
-  const sampleWave = sampler(wave), sampleIdle = sampler(idle);
+  const sampleWave = sampler(wave);
   const waveFrames = Math.max(1, Math.floor(wave.duration * fps));
-  const idleFrames = Math.max(1, Math.floor(idle.duration * fps));
   const firstIdle = settings.motion === 'wave-idle' ? waveFrames : 0;
-  const sample = (frame) => frame < firstIdle ? sampleWave(frame).actors[0].pose : sampleIdle((frame - firstIdle) % idleFrames).actors[0].pose;
+  const handoffFrames = Math.max(1, Math.round(IDLE_RESTART_SECONDS * fps));
+  const heldWave = firstIdle > 0 ? sampleWave(firstIdle - 1).actors[0].pose : null;
+  const idlePose = (frame) => evaluateLoopingPose(idle, Math.max(0, frame) / fps, LOOP_CROSSFADE_SECONDS);
+  const sample = (frame) => {
+    if (frame < firstIdle) return sampleWave(frame).actors[0].pose;
+    const idleFrame = frame - firstIdle;
+    const looping = idlePose(idleFrame);
+    if (heldWave && idleFrame <= handoffFrames) return blendPoses(heldWave, looping, idleFrame / handoffFrames);
+    return looping;
+  };
   let cuts = settings.camera === 'cuts'
     ? durationFrames < 360
       ? [0, Math.floor(durationFrames * 0.36), Math.floor(durationFrames * 0.7), durationFrames]

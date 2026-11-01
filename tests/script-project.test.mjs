@@ -81,3 +81,35 @@ test('storyboard sections become editable shots without resetting bank motion', 
   assert.throws(() => createScriptEpisode({ ...fixture, settings: { ...settings, text: 'Only one section.' } }), /2–8/);
   assert.throws(() => validateScriptSettings({ ...settings, shotCameras: ['unknown'] }), /Shot cameras/);
 });
+
+test('idle wrap crossfades instead of seeking to the first frame', () => {
+  const fixture = studioFixture();
+  const episode = createScriptEpisode({
+    ...fixture,
+    settings: {...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close'},
+    minimumSeconds: 8,
+  });
+  const evaluate = compileEpisode(episode);
+  const y = (frame) => evaluate(frame).actors[0].pose.hips.position[1];
+  const steps = [];
+  for (let frame = 45; frame <= 75; frame += 1) steps.push(Math.abs(y(frame) - y(frame - 1)));
+  assert.ok(Math.max(...steps) < 0.05, `wrap step ${Math.max(...steps)}`);
+  const sequential = [50, 59, 60, 61, 70].map((frame) => evaluate(frame));
+  for (const frame of [70, 60, 50, 61, 59]) {
+    assert.deepEqual(evaluate(frame), sequential[[50, 59, 60, 61, 70].indexOf(frame)]);
+  }
+  const wave = createScriptEpisode({
+    ...fixture,
+    settings: {...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'wave-idle', camera: 'medium'},
+    minimumSeconds: 8,
+  });
+  const played = compileEpisode(wave);
+  const join = Math.floor(fixture.wave.duration * 30);
+  const across = [];
+  for (let frame = join - 2; frame <= join + 20; frame += 1) {
+    const before = played(frame - 1).actors[0].pose.hips.position;
+    const after = played(frame).actors[0].pose.hips.position;
+    across.push(Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]));
+  }
+  assert.ok(Math.max(...across) < 0.05, `handoff step ${Math.max(...across)}`);
+});
