@@ -10,6 +10,7 @@
     "setup": "node scripts/setup.mjs",
     "import:vrm": "node scripts/import-vrm.mjs",
     "import:motion": "node scripts/import-poselab.mjs",
+    "import:beats": "node scripts/import-beats.mjs",
     "motions": "node scripts/list-motions.mjs",
     "render": "node scripts/render.mjs",
     "subtitles": "node scripts/export-subtitles.mjs",

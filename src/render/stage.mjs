@@ -57,8 +57,12 @@ function applyLoadedAim(vrm, motion, metaVersion) {
 function applyBoneLook(vrm, motion, metaVersion) {
   const applier = vrm.lookAt?.applier;
   if (applier?.constructor?.type !== 'bone' || !motion) return false;
-  if (!applier.rangeMapHorizontalInner || Math.hypot(motion.lookYaw ?? 0, motion.lookPitch ?? 0) < 1e-6) return true;
-  const eyes = boneLookEyeRotations(motion.lookYaw, motion.lookPitch, {
+  // eyeYaw/eyePitch exist only when a reactivity eyes block added saccades.
+  // Without them the look yaw and pitch are the pre-eyes values.
+  const yaw = motion.eyeYaw ?? motion.lookYaw ?? 0;
+  const pitch = motion.eyePitch ?? motion.lookPitch ?? 0;
+  if (!applier.rangeMapHorizontalInner || Math.hypot(yaw, pitch) < 1e-6) return true;
+  const eyes = boneLookEyeRotations(yaw, pitch, {
     horizontalInner: (value) => applier.rangeMapHorizontalInner.map(value),
     horizontalOuter: (value) => applier.rangeMapHorizontalOuter.map(value),
     verticalDown: (value) => applier.rangeMapVerticalDown.map(value),

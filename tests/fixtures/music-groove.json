@@ -1,0 +1,55 @@
+{
+  "schema": "narrative-episode/0.1",
+  "fps": 30,
+  "durationFrames": 180,
+  "actors": [{ "id": "a", "assetId": "synthetic" }],
+  "music": {
+    "schema": "narrative-music/0.1",
+    "bpm": 152,
+    "offsetSeconds": 0,
+    "beats": [
+      { "frame": 0, "strength": 0.92, "downbeat": true },
+      { "frame": 12, "strength": 0.5, "downbeat": false },
+      { "frame": 24, "strength": 0.5, "downbeat": false },
+      { "frame": 36, "strength": 0.5, "downbeat": false },
+      { "frame": 47, "strength": 0.92, "downbeat": true },
+      { "frame": 59, "strength": 0.5, "downbeat": false },
+      { "frame": 71, "strength": 0.5, "downbeat": false },
+      { "frame": 83, "strength": 0.5, "downbeat": false },
+      { "frame": 95, "strength": 0.92, "downbeat": true },
+      { "frame": 107, "strength": 0.5, "downbeat": false },
+      { "frame": 118, "strength": 0.5, "downbeat": false },
+      { "frame": 130, "strength": 0.5, "downbeat": false },
+      { "frame": 142, "strength": 0.92, "downbeat": true },
+      { "frame": 154, "strength": 0.5, "downbeat": false },
+      { "frame": 166, "strength": 0.5, "downbeat": false },
+      { "frame": 178, "strength": 0.5, "downbeat": false }
+    ],
+    "sections": [
+      { "frame": 0, "label": "groove", "energy": 0.62 },
+      { "frame": 96, "label": "hook", "energy": 0.84 }
+    ]
+  },
+  "shots": [{
+    "id": "shot",
+    "startFrame": 0,
+    "durationFrames": 180,
+    "camera": { "position": [0, 1.5, 1.35], "target": [0, 1.5, 0], "fov": 20 },
+    "performances": [{
+      "actorId": "a",
+      "sequence": { "duration": 6, "keyframes": [{ "time": 0, "pose": {} }, { "time": 6, "pose": {} }] },
+      "reactivity": {
+        "look": "camera",
+        "head": 0.78,
+        "torso": 0.42,
+        "arm": 0,
+        "expression": 0.8,
+        "autoBeats": false,
+        "groove": { "division": "half", "amount": 1, "phaseFrames": -1, "roll": 1, "seed": 1 },
+        "eyes": { "blinkRate": 16, "saccade": 1, "seed": 1 },
+        "body": { "breath": 1, "sway": 1, "swayDivision": "bar", "seed": 0 },
+        "face": { "idleMouth": 0.03, "breathMouth": true, "mood": "sections" }
+      }
+    }]
+  }]
+}

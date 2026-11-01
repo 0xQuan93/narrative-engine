@@ -7,6 +7,10 @@
  * look-at appliers need the loaded rig (and would double-apply these offsets),
  * and spring bones integrate from the previous tail position.
  *
+ * Optional music life (`groove`, `eyes`, `body`, `face`, episode `music`)
+ * is applied only when those blocks are present. Omitting them leaves this
+ * function on the original look / beat / mouth path.
+ *
  * Rotations are VRM 1 normalized deltas (+Y up, +Z forward, +X to the
  * character's left), the same convention as episode poses. The evaluator aims
  * a canonical T-pose right arm so tests can run without a VRM. At draw time
@@ -16,6 +20,7 @@
  */
 
 import {canonicalExpressionName, resolveExpressionName} from './expression-names.mjs';
+import {sampleBody, sampleEyes, sampleFace, sampleGroove, speakingAt, validateLifeBlocks} from './music.mjs';
 
 const REST = Object.freeze([0, 0, 0, 1]);
 const YAW_LIMIT = 0.62;
@@ -112,6 +117,12 @@ export function quatYXZ(yaw, pitch, roll = 0) {
     c1 * c2 * s3 - s1 * s2 * c3,
     c1 * c2 * c3 + s1 * s2 * s3,
   ]);
+}
+
+export function combineRotations(pose, bones) {
+  let combined = [0, 0, 0, 1];
+  for (const bone of bones) combined = mul(combined, pose[bone]?.rotation ?? REST);
+  return combined;
 }
 
 export function rotateVector(q, v) {
@@ -490,6 +501,7 @@ export function applyReactivity(input) {
     reactivity, pose, expressions, frame, fps, camera, previousCamera,
     handheldStrength = 0, dialogue = null, dialogueState = null, isSpeaker = false,
     actorIndex = 0, actorCount = 1, shotStart = 0, shotEnd = Number.MAX_SAFE_INTEGER,
+    music = null,
   } = input;
   const headWeight = reactivity.head ?? 0.7;
   const torsoWeight = reactivity.torso ?? 0.35;
@@ -510,11 +522,24 @@ export function applyReactivity(input) {
 
   const explicit = episodeTimed(reactivity.beats, shotStart)
     .filter((beat) => beat.frame >= shotStart && beat.frame < shotEnd);
-  const beats = reactivity.autoBeats === false ? explicit : [...derivedBeats(dialogue, shotStart, shotEnd), ...explicit];
+  let beats = reactivity.autoBeats === false ? explicit : [...derivedBeats(dialogue, shotStart, shotEnd), ...explicit];
+  const musicBeats = (music?.beats ?? [])
+    .filter((beat) => beat.frame >= shotStart && beat.frame < shotEnd);
+  const intensityCues = episodeTimed(reactivity.intensityCues, shotStart)
+    .filter((cue) => cue.frame >= shotStart && cue.frame < shotEnd);
+  let groove = null;
+  if (reactivity.groove) {
+    groove = sampleGroove({
+      frame, fps, groove: reactivity.groove, musicBeats, intensityCues,
+      nodBeats: beats.filter((beat) => beat.kind === 'nod'),
+      lookActive: reactivity.look === 'camera' || reactivity.look === 'interest',
+    });
+    if (!groove.fromMusic) beats = beats.filter((beat) => beat.kind !== 'nod');
+  }
   const levels = beatLevels(frame, beats);
   const punch = cameraPunch(camera, previousCamera);
   const spoken = isSpeaker ? wordEnergy(dialogueState, frame) : 0;
-  const marked = cueLevel(frame, episodeTimed(reactivity.intensityCues, shotStart));
+  const marked = cueLevel(frame, intensityCues);
   const handheld = clamp((handheldStrength ?? 0) / 1.5, 0, 1);
   const intensity = clamp01(Math.max(punch, marked, spoken) * 0.92 + handheld * 0.2);
 
@@ -543,6 +568,29 @@ export function applyReactivity(input) {
     additiveBone(outPose, bone, boneYaw, bonePitch, lean * weights[channel]);
   }
 
+  if (groove) {
+    additiveBone(outPose, 'head', 0, groove.headPitch, groove.roll * 0.45);
+    additiveBone(outPose, 'neck', 0, groove.neckPitch, 0);
+    additiveBone(outPose, 'chest', 0, groove.chestPitch, groove.roll);
+    additiveBone(outPose, 'spine', 0, groove.spinePitch, groove.roll * 0.35);
+    additiveBone(outPose, 'leftShoulder', 0, groove.shoulderPitch, 0);
+    additiveBone(outPose, 'rightShoulder', 0, groove.shoulderPitch, 0);
+  }
+  let body = null;
+  if (reactivity.body) {
+    body = sampleBody({
+      frame, fps, body: reactivity.body, musicBeats,
+      lookActive: reactivity.look === 'camera' || reactivity.look === 'interest',
+    });
+    additiveBone(outPose, 'chest', 0, body.chestPitch, body.chestRoll);
+    additiveBone(outPose, 'upperChest', 0, body.upperPitch, 0);
+    additiveBone(outPose, 'spine', body.spineYaw, body.spinePitch, body.spineRoll);
+    additiveBone(outPose, 'leftShoulder', 0, body.shoulderPitch, 0);
+    additiveBone(outPose, 'rightShoulder', 0, body.shoulderPitch, 0);
+    additiveBone(outPose, 'neck', body.neckCounterYaw, 0, body.neckCounterRoll);
+    additiveBone(outPose, 'head', body.headCounterYaw, 0, body.headCounterRoll);
+  }
+
   const aimRaw = armWeight * armWindow(frame, reactivity.armDelayFrames ?? 0) * levels.point;
   const aim = aimBlend(aimRaw);
   let aimMotion;
@@ -560,21 +608,76 @@ export function applyReactivity(input) {
   }
 
   if (isSpeaker) outExpressions = tightenMouth(outExpressions, dialogue, frame, expressionWeight, intensity);
+  const moodOn = reactivity.face && (reactivity.face.mood ?? 'sections') !== 'off';
   if (expressionWeight > 0) {
-    addExpression(outExpressions, 'happy', expressionWeight * 0.45 * levels.nod);
+    if (!moodOn) addExpression(outExpressions, 'happy', expressionWeight * 0.45 * levels.nod);
     addExpression(outExpressions, 'surprised', expressionWeight * 0.55 * Math.max(levels.point, punch));
     addExpression(outExpressions, 'relaxed', expressionWeight * 0.35 * levels.lean);
-    if (isSpeaker) addExpression(outExpressions, 'blink', expressionWeight * blinkWeight(dialogue, frame, fps));
+  }
+  if (reactivity.face) {
+    const sections = (music?.sections ?? []).filter((section) => section.frame < shotEnd);
+    const face = sampleFace({
+      frame, fps, face: reactivity.face, sections, intensityCues,
+      downbeats: musicBeats.filter((beat) => beat.downbeat),
+      speaking: speakingAt(dialogue, frame),
+      expressionWeight, seed: reactivity.eyes?.seed ?? reactivity.groove?.seed ?? 0,
+    });
+    addExpression(outExpressions, 'happy', face.happy);
+    addExpression(outExpressions, 'relaxed', face.relaxed);
+    addExpression(outExpressions, 'surprised', face.surprised);
+    addExpression(outExpressions, 'oh', face.oh);
+    addExpression(outExpressions, 'aa', face.aa);
+  }
+  const speechBlink = isSpeaker ? blinkWeight(dialogue, frame, fps) : 0;
+  let eyeYaw = yaw;
+  let eyePitch = pitch;
+  if (reactivity.eyes) {
+    const safe = [0];
+    for (const section of music?.sections ?? []) {
+      const local = section.frame - shotStart;
+      if (local >= 0 && local < shotEnd - shotStart) safe.push(local);
+    }
+    for (const land of groove?.lands ?? []) {
+      const local = land - shotStart + Math.max(1, Math.round(fps / 30));
+      if (local >= 0 && local < shotEnd - shotStart) safe.push(local);
+    }
+    const eyes = sampleEyes({
+      localFrame: frame - shotStart,
+      shotDuration: shotEnd - shotStart,
+      fps,
+      eyes: reactivity.eyes,
+      safeFrames: safe,
+      happy: outExpressions.happy ?? 0,
+      relaxed: outExpressions.relaxed ?? 0,
+      punch,
+    });
+    addExpression(outExpressions, 'blink', Math.max(eyes.blink, expressionWeight * speechBlink));
+    addExpression(outExpressions, 'blinkLeft', eyes.blinkLeft);
+    addExpression(outExpressions, 'blinkRight', eyes.blinkRight);
+    eyeYaw = yaw + eyes.yaw;
+    eyePitch = pitch + eyes.pitch;
+  } else if (isSpeaker && expressionWeight > 0) {
+    addExpression(outExpressions, 'blink', expressionWeight * speechBlink);
   }
   // Expression look-at uses blendshapes. Bone look-at avatars have no look*
-  // shapes; the stage writes leftEye/rightEye from lookYaw/lookPitch instead.
+  // shapes; the stage writes leftEye/rightEye from lookYaw/lookPitch, or from
+  // eyeYaw/eyePitch when an eyes block added a saccade.
   if (headWeight > 0) {
     if (yaw > 0) addExpression(outExpressions, 'lookLeft', headWeight * (yaw / YAW_LIMIT));
     if (yaw < 0) addExpression(outExpressions, 'lookRight', headWeight * (-yaw / YAW_LIMIT));
     if (pitch < 0) addExpression(outExpressions, 'lookUp', headWeight * (-pitch / PITCH_LIMIT));
     if (pitch > 0) addExpression(outExpressions, 'lookDown', headWeight * (pitch / PITCH_LIMIT));
   }
+  if (reactivity.eyes) {
+    const saccadeYaw = eyeYaw - yaw;
+    const saccadePitch = eyePitch - pitch;
+    if (saccadeYaw > 0) addExpression(outExpressions, 'lookLeft', saccadeYaw / YAW_LIMIT);
+    if (saccadeYaw < 0) addExpression(outExpressions, 'lookRight', -saccadeYaw / YAW_LIMIT);
+    if (saccadePitch < 0) addExpression(outExpressions, 'lookUp', -saccadePitch / PITCH_LIMIT);
+    if (saccadePitch > 0) addExpression(outExpressions, 'lookDown', saccadePitch / PITCH_LIMIT);
+  }
 
+  const nodLevel = clamp01(Math.max(levels.nod, groove?.head ?? 0));
   return {
     pose: outPose,
     expressions: outExpressions,
@@ -582,10 +685,13 @@ export function applyReactivity(input) {
       intensity,
       lookYaw: yaw,
       lookPitch: pitch,
-      beat: dominantBeat(levels),
-      nod: levels.nod,
+      beat: dominantBeat({...levels, nod: nodLevel}),
+      nod: nodLevel,
       point: levels.point,
       lean: levels.lean,
+      ...(reactivity.eyes ? {eyeYaw, eyePitch} : {}),
+      ...(groove ? {grooveHead: groove.head, grooveNeck: groove.neck} : {}),
+      ...(body ? {breath: body.breath, sway: body.sway} : {}),
       ...(aimMotion ? {aim: aimMotion} : {}),
     },
   };
@@ -661,6 +767,7 @@ function timedList(value, path, shotStart, shotEnd, fields, required) {
 export function validateReactivity(value, path, {shotDuration, episodeDuration}) {
   plainObject(value, path, [
     'look', 'interest', 'head', 'torso', 'arm', 'expression', 'autoBeats', 'armDelayFrames', 'beats', 'intensityCues',
+    'groove', 'eyes', 'body', 'face',
   ], ['look']);
   if (!LOOKS.has(value.look)) fail(`${path}.look`, 'unsupported look mode');
   if (value.look === 'interest') {
@@ -676,5 +783,6 @@ export function validateReactivity(value, path, {shotDuration, episodeDuration})
   if (own(value, 'intensityCues')) {
     timedList(value.intensityCues, `${path}.intensityCues`, 0, shotDuration, ['frame', 'intensity', 'duration'], ['frame', 'intensity']);
   }
+  validateLifeBlocks(value, path, shotDuration);
   return value;
 }

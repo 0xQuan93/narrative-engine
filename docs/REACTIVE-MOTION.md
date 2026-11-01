@@ -71,7 +71,7 @@ Evaluated actors gain a `motion` summary (`intensity`, `lookYaw`, `lookPitch`, `
 
 - **Look.** Yaw and pitch, clamped, are shared across spine, chest, upper chest, neck, and head. Head and neck take a smaller share than the torso chain, and that share is capped, so a nod or a PoseLab head key does not stack on top of the look. While the look is active the clip's head and neck rotations fade toward rest before the look offset is applied. `lookLeft` / `lookRight` / `lookUp` / `lookDown` weights are still written for expression look-at. On a bone look-at avatar the stage ignores those weights and writes `leftEye` / `rightEye` from the file's range map (`lookYaw` / `lookPitch` in radians, positive yaw toward +X, positive pitch looking down). `vrm.lookAt.update()` is not called.
 - **Aim.** On `point` beats the aim direction is chest-local: torso yaw already used for the look is removed, the direction is lifted slightly, then clamped to a 32° cone around +Z so a wide lens does not swing the hand to the floor or out to the side. A 12-step CCD solves a canonical right arm (rest `-X`, lengths 0.27 and 0.24) to about 96% of full reach, so the elbow stays slightly soft and the hand points along the forearm. At draw time the stage measures `rightLowerArm` and `rightHand` rest offsets and solves again, then blends onto the clip. The wrist rolls to lift the thumb, the index stays nearly straight, and the other fingers curl into the palm. Bones the avatar does not have are skipped. Lively's arm gain arrives in that cone. Subtle stays a small blend. The left arm gets a small counter roll. Preset numbers are unchanged.
-- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. Nods add `happy`, points and camera punches add `surprised`, leans add `relaxed`. Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner.
+- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. Nods add `happy`, points and camera punches add `surprised`, leans add `relaxed`, unless `face.mood` is `sections` or `intensity` (see [Music close-ups](#music-close-ups)). Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner.
 
 Optional presets the avatar does not define are skipped (`happy`, `blink`, `lookLeft`, and the other names in `OPTIONAL_REACTIVE_EXPRESSIONS`). Names are matched case-insensitively, and VRM 0 file presets alias to VRM 1 (`joy`/`happy`, `fun`/`relaxed`, `sorrow`/`sad`, `a`/`aa`, and the rest of the table in `src/expression-names.mjs`). A custom `Surprised` group matches `surprised`. `inspectVrm` keeps the file spellings on `expressions` and adds `canonicalExpressions` from the same table. Mouth shapes required by the script, and any expression named in an authored track, still have to exist after that lookup.
 
@@ -79,12 +79,65 @@ Evaluated `motion` also includes `aim` while a point is active: `direction` (uni
 
 ## Limits
 
-- No waveform, microphone, or cloud model is read at render time. Timing comes from the script estimator, camera keys, and any cues you write into the episode.
+- No waveform, microphone, or cloud model is read at render time. Timing comes from the script estimator, camera keys, cues in the episode, and an optional offline `music` block.
 - Spring bones, hair, and cloth do not simulate. They stay at the imported rest so frames remain seekable.
 - The evaluated arm solve uses canonical lengths. The stage re-solves from the loaded rest offsets, still as a normalized aim, not a contact with a prop.
 - Look uses a fixed head height, not a skinned head bone. Bone look-at range maps are read at draw time. Expression look-at uses the blendshape weights above.
 - VRM 0 quaternions and aim directions are flipped with `poseForVrm` / `axesForVrm` at draw time. Author offsets in the VRM 1 convention the rest of the episode uses.
 - Reactivity does not change caption text, camera cuts, or the PoseLab hip track.
+
+## Music close-ups
+
+These blocks are opt-in. An episode that does not set `music`, and whose performances do not set `groove`, `eyes`, `body`, or `face`, evaluates on the path above. Script Studio does not write them yet. There is still no audio decoder inside Remotion. Analyze the track offline and store frames.
+
+`tests/fixtures/music-groove.json` is a 6 second, 152 BPM grid (half-time nods, groove then hook) with no dialogue. `npm run evaluate -- tests/fixtures/music-groove.json 47` prints one downbeat.
+
+### `episode.music`
+
+Episode-absolute frames. `bpm` is required (40–300). `beats` holds up to 4096 items, strictly increasing, each with `frame` and `strength` (0–1). `downbeat` marks the “1”. `sections` holds up to 64 of `groove`, `hook`, `drop`, or `outro`, each with `energy` (0–1). `offsetSeconds` records where the slice sat in the source file. The renderer does not read it.
+
+```bash
+npm run import:beats -- beats.json --episode episode.json --out episode-music.json
+npm run import:beats -- song.mp3 --start 144.13 --duration 20 --fps 30 --out beats.json
+```
+
+The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onset, beat track, kick energy under 150 Hz, downbeat by kick phase). It needs a local `python3` with `librosa` and `numpy`, and it fails with that message when they are missing. Rendering never calls it. Above about 130 BPM, set `groove.division` to `half`. At or under 100 BPM, `beat` is enough. `bar` keeps only downbeats.
+
+### `reactivity.groove`
+
+`{ "division": "half", "amount": 1, "phaseFrames": -1, "roll": 0.65, "seed": 1 }`. Division, amount, phase, roll, and seed can be omitted.
+
+Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° as `roll` goes from 0 to 1. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
+
+When `episode.music` has beats in the shot, those beats drive the groove and any explicit `beats` still add with the older symmetric pulse. Dialogue `autoBeats` are unchanged. With no music beats in the shot, groove reshapes nod-kind `beats` (default division `beat`, so a list you already thinned to half-time is not thinned again) and does not also play the sine. `intensityCues` scale those reshaped nods. They do not open the mouth on every hit.
+
+### `reactivity.eyes`
+
+`{ "blinkRate": 16, "saccade": 0.5, "seed": 1 }`. `blinkRate` is blinks per minute, 6–40. This is what makes a music cut blink. Without `eyes`, blinks still happen only at sentence-ending punctuation for the speaker.
+
+Intervals are log-normal from `hash(seed, index)`, not a metronome. At 30 fps the lid shuts in 2–3 frames, holds one frame, and opens over 5–7. About one blink in ten is a double, 6–10 frames later. About one in five leads with `blinkLeft` or `blinkRight` by one frame (skipped when the avatar has no such preset). A scheduled blink snaps to a cut, a section boundary, or the frame after a groove landing when one of those is within 8 frames. `happy` or `relaxed` above 0.5 suppresses the blink for that frame, which is the VRM `overrideBlink` case. A hard camera punch does too.
+
+Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They are added to `motion.eyeYaw` / `motion.eyePitch` for the eyes only. Head bones stay on `lookYaw` / `lookPitch`. Optional `gazeAway` cues are shot-local `{ frame, duration, yaw, pitch }` and also move only the eyes. Bone look-at avatars still pass those angles through the file’s range map, which is often only about 10° of output, so the iris travel stays small. A larger eye gain is not in this pass.
+
+### `reactivity.body`
+
+`{ "breath": 1, "sway": 0.8, "swayDivision": "bar", "seed": 0 }`. Breath is chest and upper-chest pitch at 0.25 Hz, about ±1.5° at `breath` 1, plus a small shoulder lift. Sway is spine and chest roll, about ±4° at `sway` 1, phase-locked so it crosses zero on downbeats (`bar`, or `2bar`). With no music beats, sway falls back to a 0.1 Hz drift. While look is on, neck and head counter-rotate so the face keeps less than half of the chest roll.
+
+### `reactivity.face`
+
+`{ "idleMouth": 0.03, "breathMouth": true, "mood": "sections" }`. `mood` may be `sections`, `intensity`, or `off`.
+
+`sections` follows `music.sections`, fading over 20 frames: groove holds a low `relaxed`, hook raises `happy` to about 0.25, drop adds a `surprised` blip under 8 frames and then `happy`, outro holds `relaxed`. Weights stay under 0.5 so they do not trip blink suppression. `intensity` uses a slow attack and release on `intensityCues` instead of a spike per cue. Both modes **stop the per-nod `happy` pulse**. `mood: "off"` keeps that pulse, which is what older episodes still do.
+
+Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on the exhale). Downbeats stronger than 0.8 add a short exhale, still under 0.2 combined. Nothing is added on a frame that already has a dialogue mouth cue, and nothing is added on every kick. The avatar needs an `oh` or `aa` preset (VRM 0 `o` / `a` alias). Those names are not optional: a face block on a rig without them fails at draw time, same as a script vowel the rig cannot play.
+
+### Camera, for authors
+
+This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
+
+### What is still out of reach
+
+PoseLab’s Face AR / ARKit companion (MediaPipe, the 52 blendshapes, a LAN recorder) lives in PoseLab, not in this importer. This pass does not read a face take, does not drive brows or asymmetric smiles, and does not replace a recorded viseme track. Spring bones stay frozen. Scenery is still `studio` or `depth-studio`. There is no automatic shot list, no Rhubarb mouth import, no VRMA dance clip, and no Script Studio control for these blocks. Hair will not follow the nod until a later, seek-safe secondary pass.
 
 ## Check a Lively take locally
 
