@@ -320,7 +320,9 @@ test('idle calm leaves a slow clip untouched and caps a one-frame spike', () => 
     return 2 * Math.acos(dot) * 180 / Math.PI;
   };
   const steps = calmed.keyframes.slice(1).map((key, index) => step(arm(calmed.keyframes[index].pose), arm(key.pose)));
-  assert.ok(Math.max(...steps) <= 2.01, `calm step ${Math.max(...steps)}`);
+  const peak = Math.max(...steps);
+  assert.ok(peak < 10 && peak > 2, `eased step ${peak}`);
+  assert.ok(steps.every((value) => Math.abs(value - 2) > 0.05));
   assert.ok(step(arm(spiked.keyframes[1].pose), arm(spiked.keyframes[2].pose)) > 15);
 });
 

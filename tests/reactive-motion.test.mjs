@@ -363,8 +363,8 @@ test('Script Studio still defaults to the clip and can opt into lively offsets',
   const fixture = studioFixture();
   const before = JSON.stringify(fixture);
   const text = 'Hello there. A second line!';
-  const still = createScriptEpisode({...fixture, settings: {...DEFAULT_SCRIPT_SETTINGS, text, motion: 'idle', reactivity: 'off'}});
-  const lively = createScriptEpisode({...fixture, settings: {...DEFAULT_SCRIPT_SETTINGS, text, motion: 'idle', reactivity: 'lively', reactivityAmount: 0.5}});
+  const still = createScriptEpisode({...fixture, settings: {...DEFAULT_SCRIPT_SETTINGS, text, motion: 'idle', reactivity: 'off', idleClip: 'imported'}});
+  const lively = createScriptEpisode({...fixture, settings: {...DEFAULT_SCRIPT_SETTINGS, text, motion: 'idle', reactivity: 'lively', reactivityAmount: 0.5, idleClip: 'imported'}});
   assert.equal(still.shots[0].performances[0].reactivity, undefined);
   assert.equal(lively.shots[0].performances[0].reactivity.look, 'camera');
   close(lively.shots[0].performances[0].reactivity.head, 0.39);
@@ -379,6 +379,7 @@ test('Script Studio still defaults to the clip and can opt into lively offsets',
   assert.equal(legacy.shots[0].performances[0].reactivity, undefined);
   const directed = createScriptEpisode({...fixture, settings: {
     ...DEFAULT_SCRIPT_SETTINGS, text: 'one '.repeat(30).trim(), motion: 'idle', camera: 'directed', reactivity: 'subtle', revealWordIndex: 12,
+    idleClip: 'imported',
   }});
   const push = directed.dialogue.captions.flatMap((caption) => caption.words)[12].endFrame + 6;
   assert.equal(directed.shots[0].performances[0].reactivity.beats[0].frame, push);

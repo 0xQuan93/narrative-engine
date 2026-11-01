@@ -59,10 +59,10 @@ const REST_POSITION = [0, 0, 0];
 export const LOOP_CROSSFADE_SECONDS = 0.3;
 export const IDLE_RESTART_SECONDS = 0.5;
 /**
- * PoseLab's Neutral Idle stays under about 1.5°/frame on the body. Happy Idle
- * does not: the left arm hits about 19°/frame and the head about 4.9°/frame
- * inside each cycle. Script Studio caps a looping idle at this step unless
- * the take opts out. Groove and other shot layers are not part of the cap.
+ * Soft ceiling for an imported idle when `idleCalm` is on. A step at this
+ * size is unchanged. A larger step eases down on a log curve, so a one-frame
+ * pop shrinks without pinning every later frame at exactly this speed.
+ * The music-cut default does not use this: it plays Neutral Idle.
  */
 export const IDLE_CALM_MAX_DEGREES = 2;
 const own = (value, key) => Object.hasOwn(value, key);
@@ -431,12 +431,18 @@ function rotationDegrees(left, right) {
   return 2 * Math.acos(dot) * 180 / Math.PI;
 }
 
+/** Log ease: identity at `maxDegrees`, then a shrinking fraction of any larger step. */
+function easedDegrees(step, maxDegrees) {
+  if (step <= maxDegrees) return step;
+  return maxDegrees * Math.log1p(step / maxDegrees) / Math.log1p(1);
+}
+
 /**
- * One forward pass over a looping idle. Each rotation may move at most
- * `maxDegrees` from the previous frame, which is how Neutral Idle already
- * behaves and how a Happy Idle arm spike stops reading as a restart.
- * A clip that is already under the cap is returned unchanged. The result
- * depends only on the sequence, so a later seek does not replay the pass.
+ * One forward pass over an imported idle. Steps at or under `maxDegrees`
+ * stay. A larger step eases on a log curve instead of snapping to a constant
+ * speed, so a pop shrinks without a run of identical 2° frames. A clip that
+ * is already under the knee is returned unchanged. The result depends only
+ * on the sequence.
  */
 export function calmIdleSequence(sequence, { fps = 30, maxDegrees = IDLE_CALM_MAX_DEGREES } = {}) {
   if (!Number.isInteger(fps) || fps < 1 || fps > 240) throw new TypeError('fps must be an integer from 1 to 240');
@@ -464,7 +470,8 @@ export function calmIdleSequence(sequence, { fps = 30, maxDegrees = IDLE_CALM_MA
     for (let i = 1; i < poses.length; i += 1) {
       const rotation = poses[i][bone]?.rotation ?? REST_ROTATION;
       const step = rotationDegrees(previous, rotation);
-      const limited = step > maxDegrees ? slerp(previous, rotation, maxDegrees / step) : rotation;
+      const eased = easedDegrees(step, maxDegrees);
+      const limited = eased < step - 1e-9 ? slerp(previous, rotation, eased / step) : rotation;
       poses[i] = {
         ...poses[i],
         [bone]: {...(poses[i][bone] ?? {}), rotation: limited},

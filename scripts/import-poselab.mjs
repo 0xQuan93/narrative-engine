@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { importPoseLabFile } from '../src/poselab.mjs';
+import { importPoseLabFile } from '../src/poselab-import.mjs';
 
 const [source, output, ...args] = process.argv.slice(2);
 const options = {};
