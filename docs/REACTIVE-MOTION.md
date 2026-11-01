@@ -4,7 +4,7 @@ Script Studio can keep playing one PoseLab gesture and then the idle loop, and l
 
 ## What the pipeline already did
 
-- **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, then loops idle. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only.
+- **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, crossfades into idle over 0.5 seconds, then crossfades each idle wrap over 0.3 seconds. A sequence can set `"loop": true` for the same seam when the shot is longer than the clip. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only.
 - **Mouth:** spelling rules in `src/dialogue.mjs` pick `aa` / `ih` / `ou` / `ee` / `oh` and ramp the weight inside each cue. There is no audio file and no phoneme aligner.
 - **Camera:** cuts, medium, close, directed (creep, push, release, handheld, depth), and storyboard. None of that moved the body.
 - **Not running during a frame:** `vrm.lookAt.update()` and expression look presets as a second pass. Bone look-at eyes are written from the loaded range map inside the stage, once per frame. Spring bones stay at the imported rest unless `episode.secondary.springWindowFrames` replays a fixed window from rest. The solver keeps the previous tail position, so an open-ended step would change pixels when Remotion draws frames out of order.
