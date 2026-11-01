@@ -3,7 +3,7 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {VRMLoaderPlugin, VRMUtils} from '@pixiv/three-vrm';
 import {compileEpisode, resolveEnvironment} from '../episode.mjs';
 import {practicalGain} from '../music.mjs';
-import {replaySprings} from './spring-window.mjs';
+import {replaySprings, SPRING_FRINGE_MAX_DEGREES, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from './spring-window.mjs';
 import {axesForVrm, poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
@@ -15,8 +15,9 @@ import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
 // No clocks, animation mixers, random blinks, or requestAnimationFrame.
 // Spring bones stay at their imported rest unless episode.secondary sets
-// springWindowFrames. That path resets the solver and replays a fixed window
-// of evaluated poses, so a frame does not depend on seek order. vrm.lookAt.update is
+// springWindowFrames. That path resets the solver, replays a fixed window
+// of evaluated poses, and caps joint rotation from the bind pose, so a frame
+// does not depend on seek order. vrm.lookAt.update is
 // not called. Bone look-at avatars get leftEye/rightEye from the loaded range map
 // before humanoid.update, which copies normalized bones onto the raw rig. A second
 // update would stomp those eyes. Expression look-at stays on blendshape weights.
@@ -141,7 +142,9 @@ export async function createStage({canvas, width, height, episode, assets, asset
   const usesNight = episodeEnv.base === 'night-roof' || shotEnvs.some((env) => env.base === 'night-roof');
   const usesPulse = episodeEnv.lightPulse > 0 || shotEnvs.some((env) => env.lightPulse > 0);
   const studioBackground = new THREE.Color('#10191d');
-  const nightBackground = new THREE.Color('#070b14');
+  const nightBackground = new THREE.Color('#1a2744');
+  const studioFogNear = scene.fog.near;
+  const studioFogFar = scene.fog.far;
   if (usesDepth) {
     // Deliberate depth cues behind the actor: thin edges and round practicals
     // reveal the circle-of-confusion in a matched sharp/blur comparison.
@@ -169,14 +172,33 @@ export async function createStage({canvas, width, height, episode, assets, asset
       nightGroup.add(object);
       return object;
     };
-    const roof = nightMesh(new THREE.PlaneGeometry(60, 60), '#141820', 0, -0.02, 0);
+    const roof = nightMesh(new THREE.PlaneGeometry(60, 60), '#1c2433', 0, -0.02, 0);
     roof.rotation.x = -Math.PI / 2;
-    nightMesh(new THREE.BoxGeometry(18, 6, 0.2), '#0c1018', 0, 2.2, -4.2);
-    nightMesh(new THREE.BoxGeometry(16, 0.08, 0.4), '#1b2433', 0, 3.4, -4);
-    for (const [x, color] of [[-2.4, '#163a46'], [0.2, '#3a2a18'], [2.2, '#123044']]) {
-      markPractical(nightMesh(new THREE.BoxGeometry(0.7, 1.1, 0.05), color, x, 2.1, -4.05, true), '#d7fbff');
+    // Sky and skyline sit in the ECU frustum (head near y=1.5, lens near z=1.3,
+    // FOV ~20). Distant black walls fall outside that cone and read as a void.
+    nightMesh(new THREE.PlaneGeometry(28, 16), '#24365c', 0, 2.4, -6.5);
+    nightMesh(new THREE.PlaneGeometry(28, 5), '#314878', 0, 1.15, -5.4);
+    for (const [x, height, shade] of [
+      [-3.2, 2.4, '#1a2236'], [-1.6, 3.3, '#222a40'], [-0.15, 2.1, '#182033'],
+      [1.35, 3.6, '#242e48'], [2.9, 2.6, '#1c263c'],
+    ]) {
+      nightMesh(new THREE.BoxGeometry(1.15, height, 0.35), shade, x, height / 2, -3.4);
+      for (let row = 0; row < 3; row += 1) {
+        const y = 0.8 + row * (height / 4);
+        markPractical(nightMesh(new THREE.BoxGeometry(0.55, 0.16, 0.04), row % 2 ? '#2a4a62' : '#4a3824', x, y, -3.2, true), '#f3fbff');
+      }
     }
-    nightMesh(new THREE.SphereGeometry(0.16, 24, 16), '#d8e4ef', -3.4, 3.5, -3.2, true);
+    // Midground practicals just behind the hair, wide enough to show at the
+    // edges of a 20° close-up and still pulse with lightPulse.
+    for (const [x, color, peak] of [[-0.72, '#1d4d5c', '#b8fff4'], [0.74, '#5a3a28', '#ffd7a8']]) {
+      markPractical(nightMesh(new THREE.BoxGeometry(0.28, 1.15, 0.06), color, x, 1.55, -1.25, true), peak);
+      markPractical(nightMesh(new THREE.BoxGeometry(0.08, 0.7, 0.04), '#12343c', x > 0 ? x - 0.22 : x + 0.22, 1.62, -1.15, true), '#9aebff');
+    }
+    nightMesh(new THREE.BoxGeometry(6.5, 0.08, 0.08), '#2c3d5c', 0, 2.15, -1.7);
+    for (const x of [-1.6, -0.8, 0, 0.85, 1.65]) {
+      markPractical(nightMesh(new THREE.SphereGeometry(0.07, 16, 12), '#6e8eb8', x, 2.15, -1.65, true), '#fff4d2');
+    }
+    nightMesh(new THREE.SphereGeometry(0.22, 24, 16), '#d5e4f5', -2.4, 3.15, -2.6, true);
   }
 
   const avatars = new Map();
@@ -223,6 +245,9 @@ export async function createStage({canvas, width, height, episode, assets, asset
       }
       // Frozen secondary bones retain their imported rest transforms.
       avatars.set(actor.id, {vrm, wrapper, rest, authored});
+    }
+    if (episode.secondary?.springWindowFrames) {
+      for (const avatar of avatars.values()) tuneSpringManager(avatar.vrm.springBoneManager, episode.secondary);
     }
   } catch (error) {
     dispose(); throw error;
@@ -298,10 +323,19 @@ export async function createStage({canvas, width, height, episode, assets, asset
         avatar.vrm.humanoid.resetNormalizedPose();
       }
       scene.updateMatrixWorld(true);
+      const maxDegrees = episode.secondary?.springMaxDegrees ?? SPRING_MAX_DEGREES;
+      const maxStep = episode.secondary?.springMaxStepDegrees ?? SPRING_MAX_STEP_DEGREES;
+      const fringeDegrees = episode.secondary?.springFringeDegrees
+        ?? (maxDegrees <= SPRING_MAX_DEGREES ? SPRING_FRINGE_MAX_DEGREES : maxDegrees);
       replaySprings(managers, frame, windowFrames, 1 / episode.fps, (cursor) => {
         const sample = cursor === frame ? state : evaluateFrame(cursor);
         boneEyes = poseActors(sample);
         scene.updateMatrixWorld(true);
+      }, {
+        settleFrames: episode.secondary?.springSettleFrames ?? SPRING_SETTLE_FRAMES,
+        maxRadians: maxDegrees * Math.PI / 180,
+        maxStepRadians: maxStep > 0 ? maxStep * Math.PI / 180 : Infinity,
+        fringeRadians: fringeDegrees * Math.PI / 180,
       });
     } else {
       boneEyes = poseActors(state);
@@ -315,6 +349,8 @@ export async function createStage({canvas, width, height, episode, assets, asset
       if (nightGroup) nightGroup.visible = night;
       scene.background.copy(night ? nightBackground : studioBackground);
       scene.fog.color.copy(night ? nightBackground : studioBackground);
+      scene.fog.near = night ? 4.5 : studioFogNear;
+      scene.fog.far = night ? 28 : studioFogFar;
     }
     if (usesPulse) {
       const gain = practicalGain(state.frame, episode.music?.beats, env.lightPulse);

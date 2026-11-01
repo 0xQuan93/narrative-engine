@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createScriptEpisode, DEFAULT_SCRIPT_SETTINGS, validateScriptSettings } from '../src/script-project.mjs';
-import { compileEpisode } from '../src/episode.mjs';
+import { compileEpisode, evaluateLoopingPose } from '../src/episode.mjs';
+import { neutralIdleSequence } from '../src/neutral-idle.mjs';
+
+const imported = (settings) => ({...settings, idleClip: 'imported'});
 
 export function studioFixture() {
   const camera = { position: [0, 1, 3], target: [0, 1, 0], fov: 30 };
@@ -12,7 +15,7 @@ export function studioFixture() {
 }
 test('script recipe preserves source cadence and continuous idle across camera cuts', () => {
   const fixture = studioFixture(); const before = JSON.stringify(fixture);
-  const episode = createScriptEpisode({ ...fixture, settings: { ...DEFAULT_SCRIPT_SETTINGS, text: 'A short original line.' } });
+  const episode = createScriptEpisode({ ...fixture, settings: imported({ ...DEFAULT_SCRIPT_SETTINGS, text: 'A short original line.' }) });
   assert.equal(episode.durationFrames, 360);
   assert.equal(episode.dialogue.actorId, 'performer');
   const evaluate = compileEpisode(episode);
@@ -23,7 +26,7 @@ test('script recipe preserves source cadence and continuous idle across camera c
 });
 test('idle and camera presets are explicit; unsupported or excessive settings fail', () => {
   const fixture = studioFixture();
-  const episode = createScriptEpisode({ ...fixture, settings: { ...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close' } });
+  const episode = createScriptEpisode({ ...fixture, settings: imported({ ...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close' }) });
   assert.equal(episode.shots.length, 1);
   assert.ok(Math.abs(compileEpisode(episode)(30).actors[0].pose.hips.position[1] - 0.1) < 1e-6);
   assert.throws(() => validateScriptSettings({ ...DEFAULT_SCRIPT_SETTINGS, arbitraryPath: '/tmp/x' }));
@@ -43,8 +46,8 @@ test('short social take keeps three camera beats and holds its final caption', (
 });
 test('directed take anchors a delayed push to the selected word with focus and PoseLab motion', () => {
   const fixture = studioFixture();
-  const settings = { ...DEFAULT_SCRIPT_SETTINGS, text: 'one '.repeat(30).trim(), motion: 'idle', camera: 'directed',
-    format: 'portrait', revealWordIndex: 12 };
+  const settings = imported({ ...DEFAULT_SCRIPT_SETTINGS, text: 'one '.repeat(30).trim(), motion: 'idle', camera: 'directed',
+    format: 'portrait', revealWordIndex: 12 });
   const episode = createScriptEpisode({ ...fixture, settings });
   const words = episode.dialogue.captions.flatMap((caption) => caption.words);
   const camera = episode.shots[0].camera;
@@ -64,8 +67,8 @@ test('storyboard sections become editable shots without resetting bank motion', 
   const fixture = studioFixture();
   fixture.baseEpisode.shots = fixture.baseEpisode.shots.map((shot, index) => ({...shot,
     camera: {...shot.camera, position: [index, 1, 3], fov: [38, 30, 25][index]}}));
-  const settings = { ...DEFAULT_SCRIPT_SETTINGS, text: 'A first scene.\n\nA second scene.\n\nA final scene.',
-    motion: 'idle', camera: 'storyboard', shotCameras: ['wide', 'close', 'medium'] };
+  const settings = imported({ ...DEFAULT_SCRIPT_SETTINGS, text: 'A first scene.\n\nA second scene.\n\nA final scene.',
+    motion: 'idle', camera: 'storyboard', shotCameras: ['wide', 'close', 'medium'] });
   const episode = createScriptEpisode({ ...fixture, settings });
   const words = episode.dialogue.captions.flatMap((caption) => caption.words);
   assert.equal(episode.shots.length, 3);
@@ -80,4 +83,144 @@ test('storyboard sections become editable shots without resetting bank motion', 
   assert.ok(evaluate(boundary).actors[0].pose.hips.position[1] >= evaluate(boundary - 1).actors[0].pose.hips.position[1]);
   assert.throws(() => createScriptEpisode({ ...fixture, settings: { ...settings, text: 'Only one section.' } }), /2–8/);
   assert.throws(() => validateScriptSettings({ ...settings, shotCameras: ['unknown'] }), /Shot cameras/);
+});
+
+test('idle wrap crossfades instead of seeking to the first frame', () => {
+  const fixture = studioFixture();
+  const episode = createScriptEpisode({
+    ...fixture,
+    settings: imported({...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close'}),
+    minimumSeconds: 8,
+  });
+  const evaluate = compileEpisode(episode);
+  const y = (frame) => evaluate(frame).actors[0].pose.hips.position[1];
+  const steps = [];
+  for (let frame = 45; frame <= 75; frame += 1) steps.push(Math.abs(y(frame) - y(frame - 1)));
+  assert.ok(Math.max(...steps) < 0.05, `wrap step ${Math.max(...steps)}`);
+  const sequential = [50, 59, 60, 61, 70].map((frame) => evaluate(frame));
+  for (const frame of [70, 60, 50, 61, 59]) {
+    assert.deepEqual(evaluate(frame), sequential[[50, 59, 60, 61, 70].indexOf(frame)]);
+  }
+  const wave = createScriptEpisode({
+    ...fixture,
+    settings: imported({...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'wave-idle', camera: 'medium'}),
+    minimumSeconds: 8,
+  });
+  const played = compileEpisode(wave);
+  const join = Math.floor(fixture.wave.duration * 30);
+  const across = [];
+  for (let frame = join - 2; frame <= join + 20; frame += 1) {
+    const before = played(frame - 1).actors[0].pose.hips.position;
+    const after = played(frame).actors[0].pose.hips.position;
+    across.push(Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]));
+  }
+  assert.ok(Math.max(...across) < 0.05, `handoff step ${Math.max(...across)}`);
+});
+
+test('music idle defaults to PoseLab Neutral Idle, not the imported swing', () => {
+  const yQuat = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const step = (left, right) => {
+    const dot = Math.min(1, Math.abs(left.reduce((sum, value, index) => sum + value * right[index], 0)));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const idle = {
+    duration: 2.9,
+    keyframes: [0, 14, 15, 16, 87].map((frame) => ({
+      time: frame / 30,
+      easing: 'linear',
+      pose: {leftUpperArm: {rotation: yQuat(frame === 15 ? 19 : 0)}},
+    })),
+  };
+  const fixture = studioFixture();
+  const episode = createScriptEpisode({
+    ...fixture, idle,
+    settings: {...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close'},
+    minimumSeconds: 8,
+  });
+  const evaluate = compileEpisode(episode);
+  const neutral = neutralIdleSequence('0');
+  const baked = evaluate(45).actors[0].pose;
+  const expected = evaluateLoopingPose(neutral, 45 / 30);
+  assert.ok(step(baked.leftUpperArm.rotation, expected.leftUpperArm.rotation) < 0.05);
+  assert.ok(step(baked.head.rotation, expected.head.rotation) < 0.05);
+  let arm = 0, head = 0, hips = 0;
+  for (let frame = 1; frame < episode.durationFrames; frame += 1) {
+    const before = evaluate(frame - 1).actors[0].pose;
+    const after = evaluate(frame).actors[0].pose;
+    arm = Math.max(arm, step(before.leftUpperArm.rotation, after.leftUpperArm.rotation));
+    head = Math.max(head, step(before.head.rotation, after.head.rotation));
+    hips = Math.max(hips, step(before.hips.rotation, after.hips.rotation));
+  }
+  assert.ok(arm < 1.6, `neutral arm ${arm}`);
+  assert.ok(head < 1.6, `neutral head ${head}`);
+  assert.ok(hips < 1.6, `neutral hips ${hips}`);
+  assert.deepEqual(evaluate(120), compileEpisode(episode)(120));
+  assert.throws(() => validateScriptSettings({...DEFAULT_SCRIPT_SETTINGS, idleClip: 'happy'}), /Idle clip/);
+});
+
+test('imported idle eases a spike without pinning steps at 2°', () => {
+  const yQuat = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const fps = 30;
+  const frames = 87;
+  const angle = (frame, start, count, stepDegrees) => {
+    if (frame < start || frame >= start + count * 2) return 0;
+    const into = frame - start + 1;
+    return (into <= count ? into : count * 2 - into + 1) * stepDegrees;
+  };
+  const idle = {
+    duration: frames / fps,
+    keyframes: Array.from({length: frames + 1}, (_, frame) => ({
+      time: frame / fps,
+      easing: 'linear',
+      pose: {leftUpperArm: {rotation: yQuat(angle(frame, 15, 6, 19))}},
+    })),
+  };
+  const step = (left, right) => {
+    const dot = Math.min(1, Math.abs(left.reduce((sum, value, index) => sum + value * right[index], 0)));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const stepsOf = (episode) => {
+    const evaluate = compileEpisode(episode);
+    const steps = [];
+    for (let frame = 1; frame < episode.durationFrames; frame += 1) {
+      const before = evaluate(frame - 1).actors[0].pose.leftUpperArm?.rotation ?? [0, 0, 0, 1];
+      const after = evaluate(frame).actors[0].pose.leftUpperArm?.rotation ?? [0, 0, 0, 1];
+      steps.push(step(before, after));
+    }
+    return steps;
+  };
+  const fixture = studioFixture();
+  const settings = imported({...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close'});
+  const eased = stepsOf(createScriptEpisode({...fixture, idle, settings, minimumSeconds: 8}));
+  const peak = Math.max(...eased);
+  const pinned = eased.filter((value) => Math.abs(value - 2) < 0.05).length / eased.length;
+  assert.ok(peak < 12 && peak > 4, `eased peak ${peak}`);
+  assert.ok(pinned < 0.2, `pinned ${pinned}`);
+  const raw = stepsOf(createScriptEpisode({...fixture, idle, settings: {...settings, idleCalm: false}, minimumSeconds: 8}));
+  assert.ok(Math.max(...raw) > 15);
+  const wave = {
+    duration: 1,
+    keyframes: [0, 10, 11, 30].map((frame) => ({
+      time: frame / fps,
+      easing: 'linear',
+      pose: {leftUpperArm: {rotation: yQuat(frame >= 11 ? 19 : 0)}},
+    })),
+  };
+  const gestured = createScriptEpisode({
+    ...fixture, wave, idle,
+    settings: {...settings, motion: 'wave-idle', camera: 'medium'},
+    minimumSeconds: 8,
+  });
+  const gestureStep = step(
+    compileEpisode(gestured)(10).actors[0].pose.leftUpperArm.rotation,
+    compileEpisode(gestured)(11).actors[0].pose.leftUpperArm.rotation,
+  );
+  assert.ok(gestureStep > 15, `wave step ${gestureStep}`);
+  assert.throws(() => validateScriptSettings({...settings, idleCalm: 'no'}), /Idle calm/);
 });

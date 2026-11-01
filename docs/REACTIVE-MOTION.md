@@ -4,7 +4,7 @@ Script Studio can keep playing one PoseLab gesture and then the idle loop, and l
 
 ## What the pipeline already did
 
-- **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, then loops idle. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only.
+- **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, crossfades into PoseLab Neutral Idle over 0.5 seconds, then crossfades each idle wrap over 0.3 seconds. That default idle is the calm 8.1s clip. `idleClip: "imported"` loops the setup idle instead, and `idleCalm` eases steps above 2° on a log curve instead of holding a constant 2°/frame. A sequence can set `"loop": true` for the same seam when the shot is longer than the clip. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only. Groove nods stay on the reactivity layer.
 - **Mouth:** spelling rules in `src/dialogue.mjs` pick `aa` / `ih` / `ou` / `ee` / `oh` and ramp the weight inside each cue. There is no audio file and no phoneme aligner.
 - **Camera:** cuts, medium, close, directed (creep, push, release, handheld, depth), and storyboard. None of that moved the body.
 - **Not running during a frame:** `vrm.lookAt.update()` and expression look presets as a second pass. Bone look-at eyes are written from the loaded range map inside the stage, once per frame. Spring bones stay at the imported rest unless `episode.secondary.springWindowFrames` replays a fixed window from rest. The solver keeps the previous tail position, so an open-ended step would change pixels when Remotion draws frames out of order.
@@ -71,7 +71,7 @@ Evaluated actors gain a `motion` summary (`intensity`, `lookYaw`, `lookPitch`, `
 
 - **Look.** Yaw and pitch, clamped, are shared across spine, chest, upper chest, neck, and head. Head and neck take a smaller share than the torso chain, and that share is capped, so a nod or a PoseLab head key does not stack on top of the look. While the look is active the clip's head and neck rotations fade toward rest before the look offset is applied. `lookLeft` / `lookRight` / `lookUp` / `lookDown` weights are still written for expression look-at. On a bone look-at avatar the stage ignores those weights and writes `leftEye` / `rightEye` from the file's range map (`lookYaw` / `lookPitch` in radians, positive yaw toward +X, positive pitch looking down). `vrm.lookAt.update()` is not called.
 - **Aim.** On `point` beats the aim direction is chest-local: torso yaw already used for the look is removed, the direction is lifted slightly, then clamped to a 32° cone around +Z so a wide lens does not swing the hand to the floor or out to the side. A 12-step CCD solves a canonical right arm (rest `-X`, lengths 0.27 and 0.24) to about 96% of full reach, so the elbow stays slightly soft and the hand points along the forearm. At draw time the stage measures `rightLowerArm` and `rightHand` rest offsets and solves again, then blends onto the clip. The wrist rolls to lift the thumb, the index stays nearly straight, and the other fingers curl into the palm. Bones the avatar does not have are skipped. Lively's arm gain arrives in that cone. Subtle stays a small blend. The left arm gets a small counter roll. Preset numbers are unchanged.
-- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. Nods add `happy`, points and camera punches add `surprised`, leans add `relaxed`, unless `face.mood` is `sections` or `intensity` (see [Music close-ups](#music-close-ups)). Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner.
+- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. On a speech take, nods add `happy`, points and camera punches add `surprised`, and leans add `relaxed`. A `face` block turns that gesture layer off (see [Music close-ups](#music-close-ups)), so a point beat or a punch does not fight section mood. Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner. A point does not paint the face when `arm` is 0, because the arm is not driving the gesture.
 
 Optional presets the avatar does not define are skipped (`happy`, `blink`, `lookLeft`, and the other names in `OPTIONAL_REACTIVE_EXPRESSIONS`). Names are matched case-insensitively, and VRM 0 file presets alias to VRM 1 (`joy`/`happy`, `fun`/`relaxed`, `sorrow`/`sad`, `a`/`aa`, and the rest of the table in `src/expression-names.mjs`). A custom `Surprised` group matches `surprised`. `inspectVrm` keeps the file spellings on `expressions` and adds `canonicalExpressions` from the same table. Mouth shapes required by the script, and any expression named in an authored track, still have to exist after that lookup.
 
@@ -107,7 +107,7 @@ The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onse
 
 `{ "division": "half", "amount": 1, "phaseFrames": -1, "roll": 0.65, "seed": 1 }`. Division, amount, phase, roll, and seed can be omitted.
 
-Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° as `roll` goes from 0 to 1. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
+Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° at mid-bar as `roll` goes from 0 to 1. It is a half-sine of the bar phase, so the lean is 0 on the downbeat and the slope matches into the next bar. A sign flip at the “1” is what used to pop the chest about 7° and the spine about 2.5° in a single frame. On an extreme close-up, a lower `roll` (about 0.2–0.4) keeps that sway inside the frame; the default stays 0.65. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
 
 When `episode.music` has beats in the shot, those beats drive the groove and any explicit `beats` still add with the older symmetric pulse. Dialogue `autoBeats` are unchanged. With no music beats in the shot, groove reshapes nod-kind `beats` (default division `beat`, so a list you already thinned to half-time is not thinned again) and does not also play the sine. `intensityCues` scale those reshaped nods. They do not open the mouth on every hit.
 
@@ -117,7 +117,7 @@ When `episode.music` has beats in the shot, those beats drive the groove and any
 
 Intervals are log-normal from `hash(seed, index)`, not a metronome. At 30 fps the lid shuts in 2–3 frames, holds one frame, and opens over 5–7. About one blink in ten is a double, 6–10 frames later. About one in five leads with `blinkLeft` or `blinkRight` by one frame (skipped when the avatar has no such preset). A scheduled blink snaps to a cut, a section boundary, or the frame after a groove landing when one of those is within 8 frames. `happy` or `relaxed` above 0.5 suppresses the blink for that frame, which is the VRM `overrideBlink` case. A hard camera punch does too.
 
-Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They are added to `motion.eyeYaw` / `motion.eyePitch` for the eyes only. Head bones stay on `lookYaw` / `lookPitch`. Optional `gazeAway` cues are shot-local `{ frame, duration, yaw, pitch }` and also move only the eyes. Bone look-at avatars still pass those angles through the file’s range map, which is often only about 10° of output, so the iris travel stays small. A larger eye gain is not in this pass.
+Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They are added to `motion.eyeYaw` / `motion.eyePitch` for the eyes only. Head bones stay on `lookYaw` / `lookPitch`. Optional `gazeAway` cues are shot-local `{ frame, duration, yaw, pitch }` and also move only the eyes. The cue still reaches its yaw and pitch. Attack and release are a smoothstep, sized so the steepest frame of the turn stays near 2° instead of a 4-frame linear ramp (a 0.3 rad look-away used to step about 4.3° every frame). Bone look-at avatars still pass those angles through the file’s range map, which is often only about 10° of output, so the iris travel stays small. A larger eye gain is not in this pass.
 
 ### `reactivity.body`
 
@@ -128,6 +128,8 @@ Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They a
 `{ "idleMouth": 0.03, "breathMouth": true, "mood": "sections" }`. `mood` may be `sections`, `intensity`, or `off`.
 
 `sections` follows `music.sections`, fading over 20 frames: groove holds a low `relaxed`, hook raises `happy` to about 0.25, drop adds a `surprised` blip under 8 frames and then `happy`, outro holds `relaxed`. Weights stay under 0.5 so they do not trip blink suppression. `intensity` uses a slow attack and release on `intensityCues` instead of a spike per cue. Both modes **stop the per-nod `happy` pulse**. `mood: "off"` keeps that pulse, which is what older episodes still do.
+
+`gestures` defaults to false whenever a `face` block is present. That is the music-cut setting: section mood keeps working, and a point beat, a camera punch, or an idle arm does not add `surprised`, `happy`, or `relaxed`. Set `face.gestures` to true only when a spoken point should show on the face. `reactivity.gestureFace` (0–1) overrides that boolean. `arm: 0` still does not paint the point, because the gesture is not driving the arm. Speech takes that omit `face` keep the old nod / point / lean face.
 
 Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on the exhale). Downbeats stronger than 0.8 add a short exhale, still under 0.2 combined. Nothing is added on a frame that already has a dialogue mouth cue, and nothing is added on every kick. The avatar needs an `oh` or `aa` preset (VRM 0 `o` / `a` alias). Those names are not optional: a face block on a rig without them fails at draw time, same as a script vowel the rig cannot play.
 
@@ -141,21 +143,66 @@ Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on 
 
 `target` is `head`. The evaluator estimates the head from the normalized pose (hips through head) and shifts the camera position and target by that delta, `lagFrames` earlier (0–12, default 3). Look still aims at the authored lens, so the eyes do not chase the lag. `amount` is 0–1. `margin` (0–0.5 m, default 0) pulls the camera back along the view and adds the same distance to depth-of-field focus, which is the hook extreme close-up fix when idle lean plus handheld walks the face off the frame. A starting point for that shot is lag 4, amount 0.75, margin 0.12. The shift is capped at 0.45 m. Follow does not look across a cut.
 
+The tilt on that close-up is the idle clip and the head chain, not `groove.roll`. Set `reactivity.roll` on that shot only: `scale` (0–1) multiplies roll on hips, spine, chest, upper chest, neck, and head, and `maxDegrees` (0–30) caps what remains. Yaw and pitch, including `reactivity.head`, stay. A shot that omits `roll` keeps its full idle energy, so a medium shot beside the close-up does not change. `groove.roll` still only adds the bar-count lean.
+
+Hook ECU recipe, on that shot only:
+
+```json
+"camera": {
+  "follow": {"target": "head", "lagFrames": 4, "amount": 0.75, "margin": 0.12}
+},
+"reactivity": {
+  "roll": {"scale": 0.25, "maxDegrees": 4},
+  "liftDegrees": 6,
+  "face": {"mood": "sections", "gestures": false, "idleMouth": 0.03}
+}
+```
+
+`gestures: false` is already the default when `face` is present. Leave `roll` off the medium shots.
+
+Neutral Idle holds the head a little lower than Happy Idle, so on that close-up the fringe can sit across the eyes. `pitchDegrees` (-12 to 12) is an opt-in lens pitch-up. Set it on the shot camera, or once on the episode as the fallback for shots that omit it. Positive degrees orbit the camera down around the target after `follow`, so the lens looks up under the fringe. The target and the distance stay put. The pose is unchanged, so `follow` lag, amount, and margin still apply, and `reactivity.roll` still caps the same twist. A shot that sets `pitchDegrees` to 0 keeps a flat lens even when the episode has a value. Omit both and existing cuts do not move. 4° is a starting point when the lens itself should look up under the fringe:
+
+`liftDegrees` (-12 to 12) is the other opt-in, and the one that moves the hair with the skull. Set it on the performance, or once on the episode. A shot value wins, including 0. Positive degrees pitch the face up in engine space: YXZ pitch decreases, split 65% head and 35% neck, eased over the first 10 frames, with the neck two frames ahead. Roll is rewritten around the same yaw and roll, so a `reactivity.roll` cap stays put, and `camera.follow` still tracks the lifted head.
+
+On source VRM 0, Neutral Idle's head-forward elevation averages about −5.1° and Happy Idle about +20.9° (the sign flips for source VRM 1). A positive lift moves a source-0 Neutral head toward that higher Happy Idle line. It does not close the whole 26° gap: 6° of head-bone pitch raised elevation about 5.9° in a direct check, and this field only puts 65% of the degrees on the head. 4–6° is the hook ECU start. Use a negative value for a source-1 conversion. Omit it and the pose does not change.
+
+```json
+"camera": {
+  "follow": {"target": "head", "lagFrames": 4, "amount": 0.75, "margin": 0.12},
+  "pitchDegrees": 4
+}
+```
+
 ### Hair
 
-`episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. The same frame is the same hair. Omit it and springs stay at the imported rest, which is what older episodes render. The window forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
+`episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. Before those poses it holds the window-start pose for `springSettleFrames` steps (default 24, range 0–48) so the jump from rest does not still ring in a short window. The same frame is the same hair. Omit `secondary` and springs stay at the imported rest.
+
+While `secondary` is on, each joint is tuned once so a music nod does not leave a thin accent standing or flicked out:
+
+- `springGravity` multiplies gravity (default 2.8) and, when the field is omitted, raises it to at least 1.4. A fringe joint (name matching bang, fringe, maegami, front hair, or 前髪, or a bind tail in front of the head and above the eyes) keeps authored gravity with no floor, so the anti-lift boost does not drag the bangs over the eyes. Side and back hair keep the boost
+- `springFringeDegrees` caps that fringe cone (default 8 when the general cap is 12 or lower, otherwise the general cap; range 0–30)
+- `springDrag` is a drag floor (default 0.82)
+- `springStiffness` multiplies stiffness (default 1.6) and, when omitted, raises it to at least 0.4, which pulls the strand back toward its bind axis
+- `springMaxDegrees` caps local rotation from the bind pose (default 12, range 0–90)
+- `springMaxStepDegrees` caps how far one simulation step may rotate (default 8, range 0–45). 0 turns that cap off
+
+The cap is measured from the bind pose, and a clamped joint's velocity is cleared so the next step does not spring back out. Set `springGravity` to 1, `springDrag` to 0, `springStiffness` to 1, `springMaxDegrees` to 90, and `springMaxStepDegrees` to 45 to keep the avatar's authored springs. An explicit gravity or stiffness value is only a multiplier; the floors apply when those fields are omitted.
+
+If a tuft is upright with springs off, the VRM authored that bone upright. These controls hold the bind pose and hang low-drag strands. They do not restyle an accent whose rest pose already stands up.
+
+`springWindowFrames` 24 with the default settle is the usual setting. A wider window (32–48) includes more of the nod; settle 0 is the old rest kick. The window still forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
 
 ### Scenery
 
-`environment` may still be `"studio"` or `"depth-studio"`. It may also be `"night-roof"`, or `{ "base": "studio" | "depth-studio" | "night-roof", "lightPulse": 0–1 }`. A shot may set `environment` the same way and override the episode for that shot only. `night-roof` is a dark roof and three emissive windows, built in the stage, with no downloaded asset. `lightPulse` brightens the practicals on kick beats (strength at least 0.35, decay 8 frames) and leaves them at the rest color between hits. Episodes that stay on the original strings do not add this geometry and do not recolor lights.
+`environment` may still be `"studio"` or `"depth-studio"`. It may also be `"night-roof"`, or `{ "base": "studio" | "depth-studio" | "night-roof", "lightPulse": 0–1 }`. A shot may set `environment` the same way and override the episode for that shot only. `night-roof` is a local sky, skyline, and midground practicals placed so a 20° close-up still has lit windows beside the head instead of a black field. `lightPulse` brightens those practicals on kick beats (strength at least 0.35, decay 8 frames) and leaves them at the rest color between hits. Episodes that stay on `studio` or `depth-studio` do not add this geometry and do not recolor lights.
 
 ### Import
 
-`extract-beats.py` labels `groove`, `hook`, `drop`, and `outro` from per-bar RMS and onset. A short or flat slice stays one groove. A sustained rise is a hook. A sharp onset jump is a drop. A quiet tail is an outro. `npm run import:beats` also writes `music.intensityCues` from strong kicks when the beats file does not already have them. Groove nod size already follows each beat's kick `strength`. Those cues feed `face.mood: "intensity"` when the performance has no `intensityCues` of its own. They do not add a per-kick smile on the older nod path, and they do not change a take that has no `face` block.
+`extract-beats.py` labels `groove`, `hook`, `drop`, and `outro` from per-bar RMS and onset. A short slice, or one whose bars stay within about 0.06 of each other, stays one groove. A sustained rise above the earlier bars is a hook even when the whole slice is already loud (around 0.7). A drop needs both a large energy step (at least 0.25 from the previous bar) and a clear onset spike (at least 0.45). A modest rise, including one whose onset only ticks up, stays a hook, so a chorus is not a surprised blip. Rename that section in the episode if it should read as a drop. A quiet tail is an outro. `npm run import:beats` also writes `music.intensityCues` from strong kicks when the beats file does not already have them. Groove nod size already follows each beat's kick `strength`. Those cues feed `face.mood: "intensity"` when the performance has no `intensityCues` of its own. They do not add a per-kick smile on the older nod path, and they do not change a take that has no `face` block.
 
 ### Camera, for authors
 
-This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. On the hook close-up, set `camera.follow` so idle lean and handheld do not walk the face out of frame. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
+This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. On the hook close-up, set `camera.follow` and `reactivity.roll` to `{ "scale": 0.25, "maxDegrees": 4 }`, and leave `face.gestures` off so section mood is the only face. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
 
 ### What is still out of reach
 

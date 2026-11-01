@@ -220,8 +220,7 @@ export function sampleGroove({
   const chestPitch = chestSum * cap;
   const marks = downbeatMarks(musicHere ? musicBeats : [], 'bar');
   const fallback = source.length >= 2 ? Math.max(8, (source.at(-1).frame - source[0].frame) / source.length * 4) : Math.round(fps * 1.6);
-  const sign = barIndex(frame, marks, fallback) % 2 === 0 ? 1 : -1;
-  const roll = sign * (2 + 2 * rollGain) * DEG * (0.7 + 0.3 * clamp01(headUnit));
+  const roll = grooveRoll(frame, marks, fallback, rollGain, headUnit);
   const shoulderPitch = Math.max(0, headUnit) * MUSIC_LIFE.shoulderNodDegrees * DEG * amount;
   return {
     fromMusic: musicHere,
@@ -324,15 +323,41 @@ export function saccadeOffset(frame, fps, amount, seed) {
   return {yaw: prevYaw, pitch: prevPitch};
 }
 
+/** Half-sine per bar: 0 on each downbeat, opposite peaks mid-bar, slope matches across the bar. */
+function grooveRoll(frame, marks, fallback, rollGain, headUnit) {
+  const amp = (2 + 2 * rollGain) * DEG * (0.7 + 0.3 * clamp01(headUnit));
+  const phase = marks && marks.length >= 2 ? barPhase(frame, marks) : null;
+  if (phase == null) {
+    const span = Math.max(1, fallback);
+    return Math.sin(Math.PI * (frame / span)) * amp;
+  }
+  const sign = barIndex(frame, marks, fallback) % 2 === 0 ? 1 : -1;
+  return sign * Math.sin(Math.PI * Math.min(1, phase)) * amp;
+}
+
+function smooth01(t) {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Look-away still reaches the cue. The edge is a smoothstep long enough that
+ * the steepest frame stays near 2°, instead of a 4-frame linear ramp.
+ */
 function gazeOffset(localFrame, cues) {
   let yaw = 0;
   let pitch = 0;
   for (const cue of cues ?? []) {
     if (localFrame < cue.frame || localFrame >= cue.frame + cue.duration) continue;
+    const travel = Math.hypot(cue.yaw, cue.pitch);
+    const half = Math.max(1, Math.floor((cue.duration - 1) / 2));
+    const wanted = Math.ceil((travel * 1.5) / (2 * DEG));
+    const attack = Math.min(half, Math.max(4, wanted));
+    const into = localFrame - cue.frame;
     const remain = cue.frame + cue.duration - 1 - localFrame;
-    const edge = Math.min(1, (localFrame - cue.frame) / 4, remain / 4, 1);
-    yaw += cue.yaw * Math.max(0, edge);
-    pitch += cue.pitch * Math.max(0, edge);
+    const edge = Math.min(smooth01(into / attack), smooth01(remain / attack));
+    yaw += cue.yaw * edge;
+    pitch += cue.pitch * edge;
   }
   return {yaw, pitch};
 }
@@ -501,9 +526,10 @@ function average(values) {
 /**
  * Label groove / hook / drop / outro from per-bar energy and onset.
  * `bars` are `{frame, energy, onset}` in episode frames, one bar each.
- * Fewer than four bars stays a single groove. A sustained rise is a hook.
- * A sharp onset jump is a drop. A quiet tail of at least two bars is an outro.
- * The same rules are ported in scripts/extract-beats.py.
+ * Fewer than four bars stays a single groove. A sustained rise above the
+ * earlier bars is a hook, including a loud slice whose absolute level is
+ * already high. A sharp onset jump is a drop. A quiet tail of at least two
+ * bars is an outro. The same rules are ported in scripts/extract-beats.py.
  */
 export function labelSections(bars) {
   const clean = (Array.isArray(bars) ? bars : []).map((bar) => ({
@@ -526,16 +552,38 @@ export function labelSections(bars) {
   const highCut = Math.max(median * 1.18, sorted[Math.floor(sorted.length * 0.7)] ?? 1);
   const floor = median + 0.08;
   const high = smooth.map((value) => value >= highCut && value >= floor);
-  const runs = [];
-  let start = -1;
-  for (let index = 0; index <= high.length; index += 1) {
-    if (index < high.length && high[index]) {
-      if (start < 0) start = index;
-    } else if (start >= 0) {
-      if (index - start >= 2) runs.push([start, index]);
-      start = -1;
+  // A loud, nearly flat slice (energy around 0.7) never clears a percentile
+  // cut that includes the hook. Compare each bar with the mean of the bars
+  // before it so a sustained step still reads as a section.
+  const relative = clean.map((bar, index) => {
+    if (index < 2 || index + 1 >= clean.length) return false;
+    const baseline = average(clean.slice(0, index).map((item) => item.energy));
+    return bar.energy >= baseline + 0.06 && clean[index + 1].energy >= baseline + 0.05;
+  });
+  const runsOf = (flags) => {
+    const found = [];
+    let start = -1;
+    for (let index = 0; index <= flags.length; index += 1) {
+      if (index < flags.length && flags[index]) {
+        if (start < 0) start = index;
+      } else if (start >= 0) {
+        if (index - start >= 2) found.push([start, index]);
+        start = -1;
+      }
     }
-  }
+    return found;
+  };
+  const mergeRuns = (runs) => {
+    const sorted = [...runs].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+    const merged = [];
+    for (const run of sorted) {
+      const last = merged.at(-1);
+      if (!last || run[0] > last[1]) merged.push([run[0], run[1]]);
+      else last[1] = Math.max(last[1], run[1]);
+    }
+    return merged;
+  };
+  const runs = mergeRuns([...runsOf(high), ...runsOf(relative)]);
   const sections = [];
   const push = (frame, label, energy) => {
     const previous = sections.at(-1);
@@ -544,15 +592,15 @@ export function labelSections(bars) {
   };
   const quietEnd = runs.length ? runs[0][0] : clean.length;
   if (quietEnd > 0) push(0, 'groove', average(clean.slice(0, quietEnd).map((bar) => bar.energy)) || 0.6);
-  const peakOnset = clean.reduce((peak, bar) => Math.max(peak, bar.onset), 0);
   for (let index = 0; index < runs.length; index += 1) {
     const [from, to] = runs[index];
     const previousEnergy = from > 0 ? clean[from - 1].energy : clean[from].energy;
     const previousOnset = from > 0 ? clean[from - 1].onset : 0;
     const jump = clean[from].energy - previousEnergy;
     const onsetJump = clean[from].onset - previousOnset;
-    const spiked = jump >= 0.28 && onsetJump >= 0.35 && clean[from].onset >= Math.max(0.01, peakOnset) * 0.75;
-    const label = index === 0 ? (spiked ? 'drop' : 'hook') : (jump >= 0.15 ? 'drop' : 'hook');
+    // A drop is a sharp hit. A modest rise (about 0.06–0.2), including one
+    // whose onset only ticks up, stays a hook so a chorus is not a surprise blip.
+    const label = jump >= 0.25 && onsetJump >= 0.45 ? 'drop' : 'hook';
     push(clean[from].frame, label, average(clean.slice(from, to).map((bar) => bar.energy)));
   }
   if (runs.length) {
@@ -694,10 +742,11 @@ export function validateLifeBlocks(value, path, shotDuration) {
   if (own(value, 'face')) {
     const face = value.face;
     const item = `${path}.face`;
-    plainObject(face, item, ['idleMouth', 'breathMouth', 'mood'], []);
+    plainObject(face, item, ['idleMouth', 'breathMouth', 'mood', 'gestures'], []);
     if (own(face, 'idleMouth')) finite(face.idleMouth, `${item}.idleMouth`, 0, 0.1);
     if (own(face, 'breathMouth')) bool(face.breathMouth, `${item}.breathMouth`);
     if (own(face, 'mood') && !MOOD_MODES.includes(face.mood)) fail(`${item}.mood`, 'unsupported mood');
+    if (own(face, 'gestures')) bool(face.gestures, `${item}.gestures`);
   }
 }
 

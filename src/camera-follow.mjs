@@ -84,3 +84,30 @@ export function applyCameraFollow(camera, {head, restHead, amount = 1, margin = 
   }
   return next;
 }
+
+/**
+ * Orbit the lens around its target. Positive degrees pitch the camera up
+ * (the camera drops, the view looks up) so a close-up can see under a fringe.
+ * Distance and target stay put. Call this after follow.
+ */
+export function pitchCamera(camera, degrees) {
+  if (!degrees) return camera;
+  const rad = degrees * Math.PI / 180;
+  const offset = camera.position.map((value, index) => value - camera.target[index]);
+  const forwardZ = camera.target[2] - camera.position[2];
+  const forwardX = camera.target[0] - camera.position[0];
+  const right = [-forwardZ, 0, forwardX];
+  const length = Math.hypot(right[0], right[1], right[2]);
+  if (length < 1e-8) return camera;
+  const axis = right.map((value) => value / length);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const along = axis[0] * offset[0] + axis[1] * offset[1] + axis[2] * offset[2];
+  const crossed = [
+    axis[1] * offset[2] - axis[2] * offset[1],
+    axis[2] * offset[0] - axis[0] * offset[2],
+    axis[0] * offset[1] - axis[1] * offset[0],
+  ];
+  const rotated = offset.map((value, index) => value * cos + crossed[index] * sin + axis[index] * along * (1 - cos));
+  return {...camera, position: camera.target.map((value, index) => value + rotated[index])};
+}

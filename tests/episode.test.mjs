@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode } from '../src/episode.mjs';
+import { EPISODE_SCHEMA, calmIdleSequence, compileEpisode, evaluateEpisodeAtFrame, evaluateLoopingPose, validateEpisode } from '../src/episode.mjs';
+import { neutralIdleSequence } from '../src/neutral-idle.mjs';
 
 const sample = JSON.parse(readFileSync(new URL('./fixtures/technical-shot.json', import.meta.url), 'utf8'));
 const clone = (value) => structuredClone(value);
@@ -250,6 +251,153 @@ test('invalid recipes and unsupported fields fail explicitly', () => {
     assert.throws(() => validateEpisode(episode), new RegExp(message));
   }
   for (const bad of [null, [], 'episode']) assert.throws(() => validateEpisode(bad), /plain object/);
+});
+
+test('a looping clip crossfades the seam and seeks in any order', () => {
+  const episode = fixture();
+  episode.fps = 30;
+  episode.durationFrames = 90;
+  episode.shots[0].durationFrames = 90;
+  const sequence = episode.shots[0].performances[0].sequence;
+  sequence.duration = 2;
+  sequence.loop = true;
+  sequence.keyframes = [
+    {time: 0, pose: {hips: {position: [0, 0, 0]}}, easing: 'linear'},
+    {time: 2, pose: {hips: {position: [0, 1, 0]}}, easing: 'linear'},
+  ];
+  const y = (frame) => evaluateEpisodeAtFrame(episode, frame).actors[0].pose.hips.position[1];
+  const gap = 1;
+  const steps = [];
+  for (let frame = 45; frame <= 75; frame += 1) steps.push(Math.abs(y(frame) - y(frame - 1)));
+  assert.ok(Math.max(...steps) < gap * 0.25, `seam step ${Math.max(...steps)}`);
+  assert.ok(Math.abs(y(51) - y(50)) < 0.05);
+  const sequential = Array.from({length: 90}, (_, frame) => evaluateEpisodeAtFrame(episode, frame));
+  for (const frame of [70, 51, 60, 0, 89, 52]) {
+    assert.deepEqual(evaluateEpisodeAtFrame(episode, frame), sequential[frame]);
+  }
+  const held = fixture();
+  held.fps = 30;
+  held.durationFrames = 90;
+  held.shots[0].durationFrames = 90;
+  held.shots[0].performances[0].sequence.keyframes = sequence.keyframes;
+  held.shots[0].performances[0].sequence.duration = 2;
+  assert.equal(evaluateEpisodeAtFrame(held, 80).actors[0].pose.hips.position[1], 1);
+  const orphan = fixture();
+  orphan.shots[0].performances[0].sequence.loopFade = 0.2;
+  assert.throws(() => validateEpisode(orphan), /loopFade/);
+  const bad = fixture();
+  bad.shots[0].performances[0].sequence.loop = true;
+  bad.shots[0].performances[0].sequence.loopFade = 1.5;
+  assert.throws(() => validateEpisode(bad), /loopFade/);
+});
+
+test('idle calm leaves a slow clip untouched and caps a one-frame spike', () => {
+  const yQuat = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const slow = {
+    duration: 2,
+    keyframes: [
+      {time: 0, pose: {head: {rotation: yQuat(0)}}, easing: 'linear'},
+      {time: 2, pose: {head: {rotation: yQuat(40)}}, easing: 'linear'},
+    ],
+  };
+  assert.equal(calmIdleSequence(slow, {fps: 30}), slow);
+  const spiked = {
+    duration: 1,
+    keyframes: [0, 1, 2, 3].map((frame) => ({
+      time: frame / 30,
+      pose: {leftUpperArm: {rotation: yQuat(frame === 2 ? 19 : 0)}},
+      easing: 'linear',
+    })),
+  };
+  spiked.duration = 3 / 30;
+  const calmed = calmIdleSequence(spiked, {fps: 30});
+  assert.deepEqual(calmIdleSequence(spiked, {fps: 30}), calmed);
+  const arm = (pose) => pose.leftUpperArm.rotation;
+  const step = (left, right) => {
+    const dot = Math.min(1, Math.abs(left.reduce((sum, value, index) => sum + value * right[index], 0)));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const steps = calmed.keyframes.slice(1).map((key, index) => step(arm(calmed.keyframes[index].pose), arm(key.pose)));
+  const peak = Math.max(...steps);
+  assert.ok(peak < 10 && peak > 2, `eased step ${peak}`);
+  assert.ok(steps.every((value) => Math.abs(value - 2) > 0.05));
+  assert.ok(step(arm(spiked.keyframes[1].pose), arm(spiked.keyframes[2].pose)) > 15);
+});
+
+test('Neutral Idle body seam stays within a degree and five degrees per second', () => {
+  const sequence = neutralIdleSequence('0');
+  const bones = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head', 'leftUpperArm', 'rightUpperArm'];
+  const degrees = (left, right) => {
+    const a = left ?? [0, 0, 0, 1];
+    const b = right ?? [0, 0, 0, 1];
+    const dot = Math.min(1, Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const first = sequence.keyframes[0].pose;
+  const last = sequence.keyframes.at(-1).pose;
+  for (const bone of bones) {
+    assert.ok(degrees(first[bone]?.rotation, last[bone]?.rotation) <= 1, `${bone} closure`);
+  }
+  const seam = sequence.duration - 0.3;
+  for (const bone of bones) {
+    const at = (time) => evaluateLoopingPose(sequence, time)[bone]?.rotation;
+    let step = 0;
+    let openTurn = 0;
+    let closeTurn = 0;
+    for (let index = -2; index <= 10; index += 1) {
+      const time = seam + index / 30;
+      const here = degrees(at(time), at(time + 1 / 30));
+      const previous = degrees(at(time - 1 / 30), at(time));
+      const turn = Math.abs(here - previous) * 30;
+      step = Math.max(step, here);
+      if (index === 0) openTurn = turn;
+      if (index === 9) closeTurn = turn;
+    }
+    assert.ok(step <= 1, `${bone} seam step ${step}`);
+    assert.ok(openTurn <= 5 && closeTurn <= 5, `${bone} seam turn ${openTurn} ${closeTurn}`);
+  }
+  const ordered = [0, seam, seam + 0.15].map((time) => evaluateLoopingPose(sequence, time));
+  assert.deepEqual(evaluateLoopingPose(sequence, seam + 0.15), ordered[2]);
+  assert.deepEqual(evaluateLoopingPose(sequence, 0), ordered[0]);
+});
+
+test('downbeat, cut, and loop wrap evaluate the same out of order', () => {
+  const beats = [0, 15, 30, 45].map((frame, index) => ({frame, strength: 0.8, downbeat: index % 2 === 0}));
+  const sequence = {
+    duration: 1, loop: true,
+    keyframes: [
+      {time: 0, pose: {spine: {rotation: [0, 0, 0, 1]}}},
+      {time: 1, pose: {spine: {rotation: [0, 0.05, 0, 0.99875]}}},
+    ],
+  };
+  const reactivity = {
+    look: 'camera', head: 0.7, torso: 0.3, arm: 0, expression: 0, autoBeats: false,
+    groove: {roll: 0.65},
+    eyes: {saccade: 0, seed: 1, gazeAway: [{frame: 4, duration: 18, yaw: 0.2, pitch: 0}]},
+  };
+  const episode = {
+    schema: EPISODE_SCHEMA, fps: 30, durationFrames: 60,
+    actors: [{id: 'a', assetId: 'synthetic'}],
+    music: {bpm: 120, beats},
+    shots: [
+      {id: 'a', startFrame: 0, durationFrames: 30, camera: {position: [0.3, 1.5, 2], target: [0, 1.4, 0], fov: 28},
+        performances: [{actorId: 'a', sequence, reactivity: {...reactivity, eyes: {saccade: 0, seed: 1}}}]},
+      {id: 'b', startFrame: 30, durationFrames: 30, camera: {position: [-0.7, 1.35, 1.3], target: [0, 1.5, 0], fov: 20},
+        performances: [{actorId: 'a', sequence, reactivity}]},
+    ],
+  };
+  const evaluate = compileEpisode(episode);
+  const forward = Array.from({length: 60}, (_, frame) => evaluate(frame));
+  for (let frame = 59; frame >= 0; frame -= 1) assert.deepEqual(evaluate(frame), forward[frame]);
+  const order = [...forward.keys()];
+  for (let index = order.length - 1; index > 0; index -= 1) {
+    const swap = (index * 7) % (index + 1);
+    [order[index], order[swap]] = [order[swap], order[index]];
+  }
+  for (const frame of order) assert.deepEqual(evaluate(frame), forward[frame]);
 });
 
 test('overlapping shots and noninteger/out-of-range frame requests fail', () => {

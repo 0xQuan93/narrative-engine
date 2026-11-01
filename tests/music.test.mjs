@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {compileDialogue} from '../src/dialogue.mjs';
 import {compileEpisode, evaluateEpisodeAtFrame, EPISODE_SCHEMA, validateEpisode} from '../src/episode.mjs';
-import {selectGrooveBeats} from '../src/music.mjs';
+import {sampleBody, sampleGroove, selectGrooveBeats} from '../src/music.mjs';
 import {combineRotations, rotateVector} from '../src/reactive-motion.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -182,6 +182,28 @@ test('saccades offset the eyes and leave the head pose on the look', () => {
   const home = evaluateEpisodeAtFrame(away, 10).actors[0];
   assert.ok(gazed.motion.eyeYaw - gazed.motion.lookYaw > 0.15);
   assert.deepEqual(gazed.pose.head, home.pose.head);
+  const turning = restEpisode((value) => {
+    value.shots[0].performances[0].reactivity = {
+      ...base, eyes: {saccade: 0, seed: 1, gazeAway: [{frame: 4, duration: 48, yaw: 0.3, pitch: 0}]},
+    };
+  });
+  let peak = 0;
+  let arrived = 0;
+  for (let frame = 4; frame < 40; frame += 1) {
+    const prev = evaluateEpisodeAtFrame(turning, frame - 1).actors[0];
+    const curr = evaluateEpisodeAtFrame(turning, frame).actors[0];
+    const step = Math.abs(curr.motion.eyeYaw - prev.motion.eyeYaw) * 180 / Math.PI;
+    peak = Math.max(peak, step);
+    arrived = Math.max(arrived, curr.motion.eyeYaw - curr.motion.lookYaw);
+    assert.deepEqual(curr.pose.head, prev.pose.head);
+  }
+  assert.ok(peak < 2.4, `gaze step ${peak}`);
+  assert.ok(peak > 0.5, `gaze never turned ${peak}`);
+  assert.ok(arrived > 0.27, `gaze arrived ${arrived}`);
+  const frames = [8, 16, 28, 36];
+  const ordered = frames.map((frame) => evaluateEpisodeAtFrame(turning, frame));
+  assert.deepEqual(evaluateEpisodeAtFrame(turning, 28), ordered[2]);
+  assert.deepEqual(evaluateEpisodeAtFrame(turning, 8), ordered[0]);
 });
 
 test('section mood does not pulse happy on each nod', () => {
@@ -235,6 +257,17 @@ test('half-time groove nods land on the beat, lead with the neck, and alternate 
   const early = rollOf(evaluateEpisodeAtFrame(rolled, 8).actors[0].pose.head.rotation);
   const late = rollOf(evaluateEpisodeAtFrame(rolled, 60).actors[0].pose.head.rotation);
   assert.ok(early * late < 0, `roll ${early} ${late}`);
+  assert.ok(Math.abs(early) > 0.01 && Math.abs(late) > 0.01);
+  const rolledEval = compileEpisode(rolled);
+  for (const beat of [47, 95, 142]) {
+    const before = rolledEval(beat - 1).actors[0].pose;
+    const at = rolledEval(beat).actors[0].pose;
+    const chestStep = Math.abs(rollOf(at.chest.rotation) - rollOf(before.chest.rotation)) * 180 / Math.PI;
+    const spineStep = Math.abs(rollOf(at.spine.rotation) - rollOf(before.spine.rotation)) * 180 / Math.PI;
+    assert.ok(chestStep < 1.5, `chest step ${chestStep} at ${beat}`);
+    assert.ok(spineStep < 0.8, `spine step ${spineStep} at ${beat}`);
+    assert.ok(Math.abs(rollOf(at.chest.rotation)) < 1e-6, `downbeat chest ${rollOf(at.chest.rotation)}`);
+  }
   const sequential = Array.from({length: 30}, (_, frame) => evaluate(frame));
   for (const frame of [29, 4, 18, 0, 11]) assert.deepEqual(evaluate(frame), sequential[frame]);
 });
@@ -369,4 +402,188 @@ test('import-beats merges a beats file onto an episode and refuses to invent aud
   ], {encoding: 'utf8'});
   assert.notEqual(audio.status, 0);
   assert.match(`${audio.stderr}`, /librosa|python|audio/i);
+});
+
+test('a point does not paint surprised when the arm is unused or a music face owns the expression', () => {
+  const beats = [{frame: 8, kind: 'point', strength: 1, duration: 16}];
+  const at = (reactivity, extra) => evaluateEpisodeAtFrame(restEpisode((episode) => {
+    episode.music = {
+      bpm: 120,
+      beats: [{frame: 0, strength: 0.5, downbeat: true}],
+      sections: [{frame: 0, label: 'groove', energy: 0.62}],
+    };
+    extra?.(episode);
+    episode.shots[0].performances[0].reactivity = reactivity;
+  }, 40), 16).actors[0];
+  const idleArm = at({look: 'off', head: 0, torso: 0.4, arm: 0, expression: 1, autoBeats: false, beats});
+  assert.equal(idleArm.expressions.surprised ?? 0, 0);
+  assert.equal(idleArm.motion.aim, undefined);
+  const armed = at({look: 'off', head: 0, torso: 0.4, arm: 0.6, expression: 1, autoBeats: false, beats});
+  assert.ok((armed.expressions.surprised ?? 0) > 0.2, armed.expressions.surprised);
+  assert.ok(armed.motion.aim.weight > 0);
+  const music = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 0.8, autoBeats: false, beats,
+    face: {mood: 'sections', idleMouth: 0, breathMouth: false},
+  });
+  assert.equal(music.expressions.surprised ?? 0, 0);
+  assert.ok((music.expressions.relaxed ?? 0) > 0.05, music.expressions.relaxed);
+  const opted = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 0.8, autoBeats: false, beats,
+    face: {mood: 'sections', idleMouth: 0, breathMouth: false, gestures: true},
+  });
+  assert.ok((opted.expressions.surprised ?? 0) > 0.2, opted.expressions.surprised);
+  assert.ok((opted.expressions.relaxed ?? 0) > 0.05);
+  const scaledOff = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 1, autoBeats: false, beats, gestureFace: 0,
+  });
+  assert.equal(scaledOff.expressions.surprised ?? 0, 0);
+  const punched = at({
+    look: 'off', head: 0, torso: 0, arm: 0, expression: 1, autoBeats: false,
+    face: {mood: 'off', idleMouth: 0, breathMouth: false},
+  }, (episode) => {
+    episode.shots[0].camera.motion = [
+      {frame: 0, position: [0, 1.5, 2.4], target: [0, 1.5, 0], fov: 28, easing: 'step'},
+      {frame: 16, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+      {frame: 40, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+    ];
+  });
+  assert.equal(punched.expressions.surprised ?? 0, 0);
+  const speechPunch = at({
+    look: 'off', head: 0, torso: 0, arm: 0, expression: 1, autoBeats: false,
+  }, (episode) => {
+    episode.shots[0].camera.motion = [
+      {frame: 0, position: [0, 1.5, 2.4], target: [0, 1.5, 0], fov: 28, easing: 'step'},
+      {frame: 16, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+      {frame: 40, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+    ];
+  });
+  assert.ok((speechPunch.expressions.surprised ?? 0) > 0.2, speechPunch.expressions.surprised);
+  assert.throws(() => validateEpisode(restEpisode((episode) => {
+    episode.shots[0].performances[0].reactivity.face = {gestures: 'no'};
+  })), /gestures/);
+  assert.throws(() => validateEpisode(restEpisode((episode) => {
+    episode.shots[0].performances[0].reactivity.gestureFace = 2;
+  })), /gestureFace/);
+});
+
+test('groove roll stays under the off-downbeat step on every downbeat', () => {
+  const fps = 30;
+  const beats = [];
+  for (let index = 0; index < 64; index += 1) {
+    beats.push({frame: Math.round(index * 15.65), strength: 0.8, downbeat: index % 4 === 0});
+  }
+  const degrees = 180 / Math.PI;
+  const steps = [];
+  let low = Infinity;
+  let high = -Infinity;
+  let swayLow = Infinity;
+  let swayHigh = -Infinity;
+  for (let frame = 1; frame < 900; frame += 1) {
+    const groove = sampleGroove({frame, fps, groove: {}, musicBeats: beats, lookActive: true});
+    const body = sampleBody({frame, fps, body: {}, musicBeats: beats, lookActive: true});
+    const before = sampleGroove({frame: frame - 1, fps, groove: {}, musicBeats: beats, lookActive: true});
+    const beforeBody = sampleBody({frame: frame - 1, fps, body: {}, musicBeats: beats, lookActive: true});
+    const chest = ((groove.roll + body.chestRoll) - (before.roll + beforeBody.chestRoll)) * degrees;
+    const spine = ((groove.roll * 0.35 + body.spineRoll) - (before.roll * 0.35 + beforeBody.spineRoll)) * degrees;
+    low = Math.min(low, groove.roll * degrees);
+    high = Math.max(high, groove.roll * degrees);
+    swayLow = Math.min(swayLow, body.chestRoll * degrees);
+    swayHigh = Math.max(swayHigh, body.chestRoll * degrees);
+    const downbeat = beats.some((beat) => beat.downbeat && Math.abs(beat.frame - frame) <= 1);
+    steps.push({frame, chest, spine, downbeat});
+  }
+  const down = steps.filter((step) => step.downbeat);
+  const off = steps.filter((step) => !step.downbeat);
+  const maxAbs = (rows, key) => Math.max(...rows.map((row) => Math.abs(row[key])));
+  const downChest = maxAbs(down, 'chest');
+  const offChest = maxAbs(off, 'chest');
+  assert.ok(downChest <= 0.53, `downbeat chest ${downChest}`);
+  assert.ok(downChest <= offChest, `down ${downChest} off ${offChest}`);
+  assert.ok(maxAbs(down, 'spine') <= downChest, `spine ${maxAbs(down, 'spine')}`);
+  assert.ok(high - low >= 5.9, `roll peak-to-peak ${high - low}`);
+  assert.ok(swayHigh - swayLow >= 5.7, `sway peak-to-peak ${swayHigh - swayLow}`);
+  let worstRatio = 0;
+  for (const beat of beats.filter((item) => item.downbeat && item.frame > 8 && item.frame < 890)) {
+    const here = Math.abs(steps.find((step) => step.frame === beat.frame).chest);
+    const neighbor = steps
+      .filter((step) => Math.abs(step.frame - beat.frame) <= 8 && step.frame !== beat.frame)
+      .map((step) => Math.abs(step.chest))
+      .sort((left, right) => left - right);
+    const median = neighbor[Math.floor(neighbor.length / 2)];
+    worstRatio = Math.max(worstRatio, here / Math.max(median, 1e-6));
+  }
+  assert.ok(worstRatio <= 1.5, `downbeat vs local median ${worstRatio}`);
+});
+
+test('the multi-frame look-away is the eyes, and the head is already on the new camera', () => {
+  const beats = [];
+  for (let index = 0; index < 6; index += 1) beats.push({frame: index * 15, strength: 0.8, downbeat: index % 4 === 0});
+  const life = {
+    look: 'camera', head: 0.78, torso: 0.42, arm: 0, expression: 0, autoBeats: false,
+    groove: {division: 'half', amount: 1, roll: 0.65},
+    eyes: {saccade: 0, seed: 1, gazeAway: [{frame: 6, duration: 36, yaw: 0.3, pitch: 0}]},
+  };
+  const shot = (id, startFrame, position, reactivity) => ({
+    id, startFrame, durationFrames: 40,
+    camera: {position, target: [0, 1.45, 0], fov: 22},
+    performances: [{
+      actorId: 'a',
+      sequence: {duration: 40 / 30, keyframes: [{time: 0, pose: {}}, {time: 40 / 30, pose: {}}]},
+      reactivity,
+    }],
+  });
+  const episode = {
+    schema: EPISODE_SCHEMA, fps: 30, durationFrames: 80,
+    actors: [{id: 'a', assetId: 'synthetic'}],
+    music: {bpm: 120, beats},
+    shots: [
+      shot('wide', 0, [0.2, 1.5, 1.8], {...life, eyes: {saccade: 0, seed: 1}}),
+      shot('ecu', 40, [-0.8, 1.3, 1.1], life),
+    ],
+  };
+  const degrees = 180 / Math.PI;
+  const angle = (left, right) => {
+    const dot = Math.abs(left[0] * right[0] + left[1] * right[1] + left[2] * right[2] + left[3] * right[3]);
+    return 2 * Math.acos(Math.min(1, dot)) * degrees;
+  };
+  const sample = compileEpisode(episode);
+  const cut = sample(40).actors[0];
+  const beforeCut = sample(39).actors[0];
+  const lookStep = Math.hypot(cut.motion.lookYaw - beforeCut.motion.lookYaw, cut.motion.lookPitch - beforeCut.motion.lookPitch) * degrees;
+  assert.ok(lookStep > 20, `cut look ${lookStep}`);
+  assert.ok(angle(cut.pose.head.rotation, beforeCut.pose.head.rotation) > 5);
+  let headAfter = 0;
+  for (let frame = 41; frame <= 48; frame += 1) {
+    const step = angle(sample(frame).actors[0].pose.head.rotation, sample(frame - 1).actors[0].pose.head.rotation);
+    headAfter = Math.max(headAfter, step);
+  }
+  assert.ok(headAfter < 1.67, `head after cut ${headAfter}`);
+  const lookNext = Math.hypot(
+    sample(41).actors[0].motion.lookYaw - cut.motion.lookYaw,
+    sample(41).actors[0].motion.lookPitch - cut.motion.lookPitch,
+  ) * degrees;
+  assert.ok(lookNext < 0.5, `look keeps moving ${lookNext}`);
+  const gaze = structuredClone(episode);
+  const home = structuredClone(episode);
+  delete home.shots[1].performances[0].reactivity.groove;
+  delete gaze.shots[1].performances[0].reactivity.groove;
+  home.shots[1].performances[0].reactivity.eyes = {saccade: 0, seed: 1};
+  const gazed = compileEpisode(gaze);
+  const held = compileEpisode(home);
+  const eyeSteps = [];
+  for (let frame = 46; frame < 70; frame += 1) {
+    const curr = gazed(frame).actors[0];
+    const prev = gazed(frame - 1).actors[0];
+    assert.deepEqual(curr.pose.head, held(frame).actors[0].pose.head);
+    eyeSteps.push((curr.motion.eyeYaw - prev.motion.eyeYaw) * degrees);
+  }
+  const peak = Math.max(...eyeSteps.map(Math.abs));
+  assert.ok(peak < 2.4 && peak > 0.4, `eye peak ${peak}`);
+  let second = 0;
+  for (let index = 1; index < eyeSteps.length; index += 1) {
+    second = Math.max(second, Math.abs(eyeSteps[index] - eyeSteps[index - 1]));
+  }
+  assert.ok(second < 0.6, `eye velocity step ${second}`);
+  const forward = Array.from({length: 80}, (_, frame) => sample(frame));
+  for (const frame of [70, 40, 5, 46, 0, 79]) assert.deepEqual(sample(frame), forward[frame]);
 });

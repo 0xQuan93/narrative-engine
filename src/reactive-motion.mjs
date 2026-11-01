@@ -106,6 +106,61 @@ function quatFromAxisAngle(axis, angle) {
 }
 
 /** YXZ euler, matching VRMLookAt: x = pitch, y = yaw, z = roll. */
+export function eulerYXZ(rotation) {
+  const [x, y, z, w] = normalizeQuat(rotation);
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  const m23 = yz - wx;
+  const pitch = Math.asin(Math.max(-1, Math.min(1, -m23)));
+  if (Math.abs(m23) < 0.9999999) {
+    return {
+      yaw: Math.atan2(xz + wy, 1 - (xx + yy)),
+      pitch,
+      roll: Math.atan2(xy + wz, 1 - (xx + zz)),
+    };
+  }
+  return {
+    yaw: Math.atan2(-(xz - wy), 1 - (yy + zz)),
+    pitch,
+    roll: 0,
+  };
+}
+
+const ROLL_BONES = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head'];
+
+/** Scale, then cap, the Z twist of one YXZ rotation. Yaw and pitch stay. */
+export function limitRoll(rotation, {scale = 1, maxRadians = Infinity} = {}) {
+  const {yaw, pitch, roll} = eulerYXZ(rotation);
+  let next = roll * scale;
+  if (Number.isFinite(maxRadians)) next = Math.max(-maxRadians, Math.min(maxRadians, next));
+  if (Math.abs(next - roll) < 1e-7) return [...rotation];
+  return quatYXZ(yaw, pitch, next);
+}
+
+/** Shot-level idle/reactivity roll. Other shots omit `roll` and stay unchanged. */
+export function limitPoseRoll(pose, roll = {}) {
+  const scale = roll.scale ?? 1;
+  const maxRadians = roll.maxDegrees == null ? Infinity : roll.maxDegrees * Math.PI / 180;
+  for (const bone of ROLL_BONES) {
+    const rotation = pose[bone]?.rotation;
+    if (!rotation) continue;
+    const next = limitRoll(rotation, {scale, maxRadians});
+    if (next === rotation || next.every((value, index) => value === rotation[index])) continue;
+    pose[bone] = {...pose[bone], rotation: next};
+  }
+}
+
+/** YXZ euler, matching VRMLookAt: x = pitch, y = yaw, z = roll. */
 export function quatYXZ(yaw, pitch, roll = 0) {
   const c1 = Math.cos(pitch / 2);
   const c2 = Math.cos(yaw / 2);
@@ -495,6 +550,17 @@ function addExpression(expressions, name, extra) {
 }
 
 /**
+ * Speech takes still paint nod / point / lean on the face. A `face` block
+ * (a music cut) defaults that layer off so section mood is the only face.
+ * `gestureFace` is a 0–1 scale and wins over `face.gestures`.
+ */
+function gestureFaceScale(reactivity) {
+  if (Object.hasOwn(reactivity, 'gestureFace')) return clamp01(reactivity.gestureFace);
+  if (reactivity.face && Object.hasOwn(reactivity.face, 'gestures')) return reactivity.face.gestures ? 1 : 0;
+  return reactivity.face ? 0 : 1;
+}
+
+/**
  * @param {object} input evaluated clip pose plus the shot signals for one frame
  * @returns {{pose: object, expressions: object, motion: object}}
  */
@@ -503,7 +569,7 @@ export function applyReactivity(input) {
     reactivity, pose, expressions, frame, fps, camera, previousCamera,
     handheldStrength = 0, dialogue = null, dialogueState = null, isSpeaker = false,
     actorIndex = 0, actorCount = 1, shotStart = 0, shotEnd = Number.MAX_SAFE_INTEGER,
-    music = null,
+    music = null, liftDegrees = 0,
   } = input;
   const headWeight = reactivity.head ?? 0.7;
   const torsoWeight = reactivity.torso ?? 0.35;
@@ -563,7 +629,7 @@ export function applyReactivity(input) {
     const nod = (bone === 'head' ? 0.24 * levels.nod : bone === 'neck' ? 0.1 * levels.nod : 0) * accent;
     const lean = (bone === 'head' ? 0.2 * levels.lean : bone === 'chest' ? 0.08 * levels.lean : 0) * accent;
     const bow = (bone === 'chest' || bone === 'spine') ? 0.08 * intensity : 0;
-    const pointYaw = bone === 'spine' ? -0.08 * levels.point : 0;
+    const pointYaw = bone === 'spine' && armWeight > 0 ? -0.08 * levels.point : 0;
     let boneYaw = yaw * share * weights[channel] + pointYaw * torsoWeight;
     let bonePitch = pitch * share * weights[channel] + (nod + bow) * weights[channel];
     if (bone === 'head' || bone === 'neck') {
@@ -614,10 +680,12 @@ export function applyReactivity(input) {
 
   if (isSpeaker) outExpressions = tightenMouth(outExpressions, dialogue, frame, expressionWeight, intensity);
   const moodOn = reactivity.face && (reactivity.face.mood ?? 'sections') !== 'off';
-  if (expressionWeight > 0) {
-    if (!moodOn) addExpression(outExpressions, 'happy', expressionWeight * 0.45 * levels.nod);
-    addExpression(outExpressions, 'surprised', expressionWeight * 0.55 * Math.max(levels.point, punch));
-    addExpression(outExpressions, 'relaxed', expressionWeight * 0.35 * levels.lean);
+  const gestures = gestureFaceScale(reactivity);
+  if (expressionWeight > 0 && gestures > 0) {
+    if (!moodOn) addExpression(outExpressions, 'happy', gestures * expressionWeight * 0.45 * levels.nod);
+    const pointDriven = armWeight > 0 ? levels.point : 0;
+    addExpression(outExpressions, 'surprised', gestures * expressionWeight * 0.55 * Math.max(pointDriven, punch));
+    addExpression(outExpressions, 'relaxed', gestures * expressionWeight * 0.35 * levels.lean);
   }
   if (reactivity.face) {
     const sections = (music?.sections ?? []).filter((section) => section.frame < shotEnd);
@@ -683,6 +751,18 @@ export function applyReactivity(input) {
   }
 
   const nodLevel = clamp01(Math.max(levels.nod, groove?.head ?? 0));
+  if (reactivity.roll) limitPoseRoll(outPose, reactivity.roll);
+  if (liftDegrees) {
+    const since = frame - shotStart;
+    const rise = (lead) => {
+      const x = clamp((since + lead) / 10, 0, 1);
+      return x * x * (3 - 2 * x);
+    };
+    // Positive lift pitches the face up. YXZ pitch is positive when looking down.
+    const rad = -liftDegrees * Math.PI / 180;
+    addPitch(outPose, 'neck', rad * 0.35 * rise(2));
+    addPitch(outPose, 'head', rad * 0.65 * rise(0));
+  }
   return {
     pose: outPose,
     expressions: outExpressions,
@@ -700,6 +780,14 @@ export function applyReactivity(input) {
       ...(aimMotion ? {aim: aimMotion} : {}),
     },
   };
+}
+
+function addPitch(pose, bone, pitch) {
+  if (Math.abs(pitch) < 1e-8) return;
+  const rotation = pose[bone]?.rotation ?? REST;
+  const euler = eulerYXZ(rotation);
+  const position = pose[bone]?.position ? [...pose[bone].position] : [0, 0, 0];
+  pose[bone] = {rotation: quatYXZ(euler.yaw, euler.pitch + pitch, euler.roll), position};
 }
 
 function fadeBone(pose, bone, amount) {
@@ -772,7 +860,7 @@ function timedList(value, path, shotStart, shotEnd, fields, required) {
 export function validateReactivity(value, path, {shotDuration, episodeDuration}) {
   plainObject(value, path, [
     'look', 'interest', 'head', 'torso', 'arm', 'expression', 'autoBeats', 'armDelayFrames', 'beats', 'intensityCues',
-    'groove', 'eyes', 'body', 'face',
+    'groove', 'eyes', 'body', 'face', 'roll', 'gestureFace', 'liftDegrees',
   ], ['look']);
   if (!LOOKS.has(value.look)) fail(`${path}.look`, 'unsupported look mode');
   if (value.look === 'interest') {
@@ -783,11 +871,19 @@ export function validateReactivity(value, path, {shotDuration, episodeDuration})
     if (own(value, key)) finite(value[key], `${path}.${key}`, 0, 1);
   }
   if (own(value, 'autoBeats') && typeof value.autoBeats !== 'boolean') fail(`${path}.autoBeats`, 'expected a boolean');
+  if (own(value, 'gestureFace')) finite(value.gestureFace, `${path}.gestureFace`, 0, 1);
+  if (own(value, 'liftDegrees')) finite(value.liftDegrees, `${path}.liftDegrees`, -12, 12);
   if (own(value, 'armDelayFrames')) finite(value.armDelayFrames, `${path}.armDelayFrames`, 0, episodeDuration, true);
   if (own(value, 'beats')) timedList(value.beats, `${path}.beats`, 0, shotDuration, ['frame', 'kind', 'strength', 'duration'], ['frame', 'kind']);
   if (own(value, 'intensityCues')) {
     timedList(value.intensityCues, `${path}.intensityCues`, 0, shotDuration, ['frame', 'intensity', 'duration'], ['frame', 'intensity']);
   }
   validateLifeBlocks(value, path, shotDuration);
+  if (own(value, 'roll')) {
+    plainObject(value.roll, `${path}.roll`, ['scale', 'maxDegrees'], []);
+    if (!own(value.roll, 'scale') && !own(value.roll, 'maxDegrees')) fail(`${path}.roll`, 'expected scale or maxDegrees');
+    if (own(value.roll, 'scale')) finite(value.roll.scale, `${path}.roll.scale`, 0, 1);
+    if (own(value.roll, 'maxDegrees')) finite(value.roll.maxDegrees, `${path}.roll.maxDegrees`, 0, 30);
+  }
   return value;
 }

@@ -3,7 +3,8 @@ import {readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {inspectVrm, importVrm} from '../src/assets.mjs';
-import {samplePoseLabClip, importPoseLabFile} from '../src/poselab.mjs';
+import {samplePoseLabClip} from '../src/poselab.mjs';
+import {importPoseLabFile} from '../src/poselab-import.mjs';
 import {createScriptEpisode, DEFAULT_SCRIPT_SETTINGS} from '../src/script-project.mjs';
 import {validateEpisode} from '../src/episode.mjs';
 import {atomicJson} from '../src/jobs.mjs';
@@ -58,7 +59,7 @@ async function main() {
   const idleResult = await importPoseLabFile(options.idle, path.join(setupDir, 'idle.sequence.json'), {fps: 30, sourceVrm: options['source-vrm']});
   const [wave, idle] = await Promise.all([waveResult, idleResult].map((result) => readFile(result.output, 'utf8').then(JSON.parse)));
   const base = baseEpisode();
-  const firstTake = createScriptEpisode({baseEpisode: base, wave, idle, settings: DEFAULT_SCRIPT_SETTINGS});
+  const firstTake = createScriptEpisode({baseEpisode: base, wave, idle, settings: {...DEFAULT_SCRIPT_SETTINGS, sourceVrm: options['source-vrm']}});
   await atomicJson(path.join(setupDir, 'base-episode.json'), base);
   await atomicJson(path.join(setupDir, 'first-take.json'), firstTake);
   console.log('Local setup complete. Run npm run gui, or render out/setup/first-take.json with npm run render.');

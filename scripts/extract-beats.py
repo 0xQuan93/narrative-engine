@@ -61,16 +61,38 @@ def label_sections(bars):
     high_cut = max(median * 1.18, sorted_energy[int(len(sorted_energy) * 0.7)])
     floor = median + 0.08
     high = [value >= high_cut and value >= floor for value in smooth]
-    runs = []
-    start = -1
-    for index in range(len(high) + 1):
-        if index < len(high) and high[index]:
-            if start < 0:
-                start = index
-        elif start >= 0:
-            if index - start >= 2:
-                runs.append((start, index))
-            start = -1
+    relative = []
+    for index, bar in enumerate(clean):
+        if index < 2 or index + 1 >= len(clean):
+            relative.append(False)
+            continue
+        baseline = average([item['energy'] for item in clean[:index]])
+        relative.append(bar['energy'] >= baseline + 0.06 and clean[index + 1]['energy'] >= baseline + 0.05)
+
+    def runs_of(flags):
+        found = []
+        start = -1
+        for index in range(len(flags) + 1):
+            if index < len(flags) and flags[index]:
+                if start < 0:
+                    start = index
+            elif start >= 0:
+                if index - start >= 2:
+                    found.append([start, index])
+                start = -1
+        return found
+
+    def merge_runs(found):
+        sorted_runs = sorted(found, key=lambda run: (run[0], run[1]))
+        merged = []
+        for run in sorted_runs:
+            if not merged or run[0] > merged[-1][1]:
+                merged.append([run[0], run[1]])
+            else:
+                merged[-1][1] = max(merged[-1][1], run[1])
+        return merged
+
+    runs = merge_runs(runs_of(high) + runs_of(relative))
     sections = []
 
     def push(frame, label, energy):
@@ -81,17 +103,13 @@ def label_sections(bars):
     quiet_end = runs[0][0] if runs else len(clean)
     if quiet_end > 0:
         push(0, 'groove', average([bar['energy'] for bar in clean[:quiet_end]]) or 0.6)
-    peak_onset = max((bar['onset'] for bar in clean), default=0)
-    for index, (start_index, end_index) in enumerate(runs):
+    for start_index, end_index in runs:
         previous = clean[start_index - 1]['energy'] if start_index > 0 else clean[start_index]['energy']
         previous_onset = clean[start_index - 1]['onset'] if start_index > 0 else 0
         jump = clean[start_index]['energy'] - previous
         onset_jump = clean[start_index]['onset'] - previous_onset
-        spiked = jump >= 0.28 and onset_jump >= 0.35 and clean[start_index]['onset'] >= max(0.01, peak_onset) * 0.75
-        if index == 0:
-            label = 'drop' if spiked else 'hook'
-        else:
-            label = 'drop' if jump >= 0.15 else 'hook'
+        # A drop is a sharp hit. A modest rise stays a hook even when onset ticks up.
+        label = 'drop' if jump >= 0.25 and onset_jump >= 0.45 else 'hook'
         push(clean[start_index]['frame'], label, average([bar['energy'] for bar in clean[start_index:end_index]]))
     if runs:
         tail_start = runs[-1][1]

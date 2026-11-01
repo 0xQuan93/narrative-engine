@@ -5,7 +5,8 @@ This repository's source code is offered under [MIT](LICENSE). Installing depend
 - **Remotion and `@remotion/*`** use [Remotion's own license](https://www.remotion.dev/license). Review its current terms for your use, including company and hosted use. Remotion source is not vendored here.
 - **Three.js** and **`@pixiv/three-vrm`** are separately distributed MIT packages. Their package notices are installed under `node_modules/`.
 - **Liberation Sans Bold** is bundled at `public/fonts/LiberationSans-Bold.ttf` under the SIL Open Font License 1.1. Its full notice is [public/fonts/LICENSE.txt](public/fonts/LICENSE.txt).
-- The normalized PoseLab track mapping in `src/poselab.mjs` follows PoseLab Studio's `VRMRigMapMixamo.ts`. PoseLab Studio is MIT licensed by Project 89; its notice is reproduced below. Motion JSON, VRMs, and PoseLab's other assets are **not** included here. Supply files you have permission to use.
+- The normalized PoseLab track mapping in `src/poselab.mjs` follows PoseLab Studio's `VRMRigMapMixamo.ts`. PoseLab Studio is MIT licensed by Project 89; its notice is reproduced below. Other motion JSON and VRMs are **not** included. Supply files you have permission to use.
+- **Neutral Idle** is the exception: `assets/poselab/idle-neutral-animation.json` is PoseLab Studio's retargeted Neutral Idle bank clip (`idle-neutral-animation.json`), included so a music cut can loop that calm performance instead of an imported Happy Idle. PoseLab's batch config names the upstream performance Mixamo "Neutral Idle". Mixamo's own terms still apply to that performance; this copy is the JSON PoseLab already redistributes. The Project 89 MIT notice below covers the file as shipped in PoseLab Studio.
 
 ## PoseLab Studio MIT notice
 

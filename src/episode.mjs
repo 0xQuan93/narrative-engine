@@ -14,14 +14,14 @@
  * top of the clip. Omit it and the pose matches the clip alone.
  * Optional episode.music plus reactivity groove/eyes/body/face add musical
  * life. Episodes that omit those blocks do not enter that path.
- * Optional camera.follow, episode.secondary, and night-roof / lightPulse
- * are also off unless those fields are set.
+ * Optional camera.follow, camera.pitchDegrees, episode.secondary, and
+ * night-roof / lightPulse are also off unless those fields are set.
  */
 
 import {validateDialogue, evaluateDialogueAtFrame} from './dialogue.mjs';
 import {validateReactivity, applyReactivity} from './reactive-motion.mjs';
 import {validateMusic} from './music.mjs';
-import {applyCameraFollow, estimateHeadPosition} from './camera-follow.mjs';
+import {applyCameraFollow, estimateHeadPosition, pitchCamera} from './camera-follow.mjs';
 
 export const EPISODE_SCHEMA = 'narrative-episode/0.1';
 export const ENVIRONMENTS = Object.freeze(['studio', 'depth-studio', 'night-roof']);
@@ -49,6 +49,22 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const EXPRESSION = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const REST_ROTATION = [0, 0, 0, 1];
 const REST_POSITION = [0, 0, 0];
+
+/**
+ * PoseLab's AnimationMixer crossfades a restart instead of seeking to frame 0.
+ * `playAnimation` fades in over 0.3s. A finished one-shot fades into idle over
+ * 0.5s. `crossFadeTo(..., warp=false)` uses a linear weight, so the two clips
+ * overlap without stretching time. See poselabstudio `src/three/animationManager.ts`.
+ */
+export const LOOP_CROSSFADE_SECONDS = 0.3;
+export const IDLE_RESTART_SECONDS = 0.5;
+/**
+ * Soft ceiling for an imported idle when `idleCalm` is on. A step at this
+ * size is unchanged. A larger step eases down on a log curve, so a one-frame
+ * pop shrinks without pinning every later frame at exactly this speed.
+ * The music-cut default does not use this: it plays Neutral Idle.
+ */
+export const IDLE_CALM_MAX_DEGREES = 2;
 const own = (value, key) => Object.hasOwn(value, key);
 const fail = (path, message) => { throw new TypeError(`${path}: ${message}`); };
 
@@ -110,8 +126,13 @@ function pose(value, path) {
 }
 
 function sequence(value, path) {
-  object(value, path, ['duration', 'keyframes']);
+  object(value, path, ['duration', 'keyframes', 'loop', 'loopFade'], ['duration', 'keyframes']);
   number(value.duration, `${path}.duration`, Number.MIN_VALUE);
+  if (own(value, 'loop') && typeof value.loop !== 'boolean') fail(`${path}.loop`, 'expected a boolean');
+  if (own(value, 'loopFade')) {
+    if (value.loop !== true) fail(`${path}.loopFade`, 'only allowed when loop is true');
+    number(value.loopFade, `${path}.loopFade`, 0, Math.min(2, value.duration / 2));
+  }
   array(value.keyframes, `${path}.keyframes`, 1);
   let previousTime = -Infinity;
   const ids = new Set();
@@ -187,13 +208,33 @@ function validateEnvironment(value, path) {
 
 /** Validate the complete supported schema; returns its unchanged input. */
 export function validateEpisode(episode) {
-  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary'],
+  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary', 'pitchDegrees', 'liftDegrees'],
     ['schema', 'fps', 'durationFrames', 'actors', 'shots']);
+  if (own(episode, 'pitchDegrees')) number(episode.pitchDegrees, 'episode.pitchDegrees', -12, 12);
+  if (own(episode, 'liftDegrees')) number(episode.liftDegrees, 'episode.liftDegrees', -12, 12);
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
   if (own(episode, 'secondary')) {
-    object(episode.secondary, 'episode.secondary', ['springWindowFrames'], ['springWindowFrames']);
+    object(episode.secondary, 'episode.secondary', [
+      'springWindowFrames', 'springSettleFrames', 'springGravity', 'springDrag', 'springStiffness',
+      'springMaxDegrees', 'springMaxStepDegrees', 'springFringeDegrees',
+    ], ['springWindowFrames']);
     number(episode.secondary.springWindowFrames, 'episode.secondary.springWindowFrames', 4, 48, true);
+    if (own(episode.secondary, 'springSettleFrames')) {
+      number(episode.secondary.springSettleFrames, 'episode.secondary.springSettleFrames', 0, 48, true);
+    }
+    if (own(episode.secondary, 'springGravity')) number(episode.secondary.springGravity, 'episode.secondary.springGravity', 0, 4);
+    if (own(episode.secondary, 'springDrag')) number(episode.secondary.springDrag, 'episode.secondary.springDrag', 0, 0.95);
+    if (own(episode.secondary, 'springStiffness')) number(episode.secondary.springStiffness, 'episode.secondary.springStiffness', 0, 4);
+    if (own(episode.secondary, 'springMaxDegrees')) {
+      number(episode.secondary.springMaxDegrees, 'episode.secondary.springMaxDegrees', 0, 90);
+    }
+    if (own(episode.secondary, 'springMaxStepDegrees')) {
+      number(episode.secondary.springMaxStepDegrees, 'episode.secondary.springMaxStepDegrees', 0, 45);
+    }
+    if (own(episode.secondary, 'springFringeDegrees')) {
+      number(episode.secondary.springFringeDegrees, 'episode.secondary.springFringeDegrees', 0, 30);
+    }
   }
   number(episode.fps, 'episode.fps', 1, 240, true);
   number(episode.durationFrames, 'episode.durationFrames', 1, Number.MAX_SAFE_INTEGER, true);
@@ -224,7 +265,8 @@ export function validateEpisode(episode) {
     if (shot.startFrame !== expectedStart) fail(`${path}.startFrame`, 'shots must be ordered and contiguous (no gaps or overlaps)');
     expectedStart += shot.durationFrames;
     if (expectedStart > episode.durationFrames) fail(path, 'shot exceeds episode duration');
-    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld', 'follow']);
+    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld', 'follow', 'pitchDegrees']);
+    if (own(shot.camera, 'pitchDegrees')) number(shot.camera.pitchDegrees, `${path}.camera.pitchDegrees`, -12, 12);
     if (own(shot.camera, 'follow')) {
       const follow = shot.camera.follow;
       const fp = `${path}.camera.follow`;
@@ -328,8 +370,9 @@ function slerp(left, right, t) {
   return normalized(a.map((v, i) => v * weightA + b[i] * weightB));
 }
 
-function evaluatePose(sequence, seconds) {
-  const [left, right, fraction] = interval(sequence.keyframes, seconds, 'time');
+function sampleSequence(sequence, seconds) {
+  const time = Math.min(Math.max(seconds, 0), sequence.duration);
+  const [left, right, fraction] = interval(sequence.keyframes, time, 'time');
   const amount = ease(fraction, left.easing);
   const bones = [...new Set(sequence.keyframes.flatMap((key) => Object.keys(key.pose)))].sort();
   return Object.fromEntries(bones.map((bone) => {
@@ -342,6 +385,117 @@ function evaluatePose(sequence, seconds) {
       position: positionA.map((v, i) => lerp(v, positionB[i], amount)),
     }];
   }));
+}
+
+/** Linear pose blend, matching AnimationAction.crossFadeTo with warp off. */
+export function blendPoses(left, right, weight) {
+  const t = Math.min(1, Math.max(0, weight));
+  const bones = [...new Set([...Object.keys(left ?? {}), ...Object.keys(right ?? {})])].sort();
+  return Object.fromEntries(bones.map((bone) => {
+    const a = left?.[bone] ?? {};
+    const b = right?.[bone] ?? {};
+    const positionA = a.position ?? REST_POSITION;
+    const positionB = b.position ?? REST_POSITION;
+    return [bone, {
+      rotation: slerp(a.rotation ?? REST_ROTATION, b.rotation ?? REST_ROTATION, t),
+      position: positionA.map((v, i) => lerp(v, positionB[i], t)),
+    }];
+  }));
+}
+
+/**
+ * Seek-safe loop. The first pass plays straight until `duration - fade`.
+ * Each seam then crossfades the end of the clip into a copy that has already
+ * started at time 0, and the survivor continues from `fade`. The blend weight
+ * is a smoothstep, so the weight velocity is zero at both ends of the fade.
+ * The same time always returns the same pose.
+ */
+export function evaluateLoopingPose(sequence, seconds, fadeSeconds = LOOP_CROSSFADE_SECONDS) {
+  const duration = sequence.duration;
+  const fade = Math.min(Math.max(fadeSeconds, 0), duration / 2);
+  if (!(fade > 0) || !(duration > 0) || seconds <= 0) return sampleSequence(sequence, Math.max(0, seconds));
+  const intro = duration - fade;
+  if (seconds <= intro) return sampleSequence(sequence, seconds);
+  const period = intro;
+  const since = seconds - intro;
+  let into = since - Math.floor(since / period) * period;
+  if (into >= period) into -= period;
+  if (into <= fade) {
+    const u = into / fade;
+    const amount = u * u * (3 - 2 * u);
+    return blendPoses(
+      sampleSequence(sequence, intro + into),
+      sampleSequence(sequence, into),
+      amount,
+    );
+  }
+  return sampleSequence(sequence, fade + (into - fade));
+}
+
+function rotationDegrees(left, right) {
+  const a = normalized(left);
+  const b = normalized(right);
+  const dot = Math.min(1, Math.abs(a.reduce((sum, v, i) => sum + v * b[i], 0)));
+  return 2 * Math.acos(dot) * 180 / Math.PI;
+}
+
+/** Log ease: identity at `maxDegrees`, then a shrinking fraction of any larger step. */
+function easedDegrees(step, maxDegrees) {
+  if (step <= maxDegrees) return step;
+  return maxDegrees * Math.log1p(step / maxDegrees) / Math.log1p(1);
+}
+
+/**
+ * One forward pass over an imported idle. Steps at or under `maxDegrees`
+ * stay. A larger step eases on a log curve instead of snapping to a constant
+ * speed, so a pop shrinks without a run of identical 2° frames. A clip that
+ * is already under the knee is returned unchanged. The result depends only
+ * on the sequence.
+ */
+export function calmIdleSequence(sequence, { fps = 30, maxDegrees = IDLE_CALM_MAX_DEGREES } = {}) {
+  if (!Number.isInteger(fps) || fps < 1 || fps > 240) throw new TypeError('fps must be an integer from 1 to 240');
+  if (!Number.isFinite(maxDegrees) || maxDegrees <= 0 || maxDegrees > 180) throw new TypeError('maxDegrees must be in (0, 180]');
+  const times = [];
+  const frameCount = Math.floor(sequence.duration * fps);
+  for (let frame = 0; frame <= frameCount; frame += 1) {
+    const time = Math.min(sequence.duration, frame / fps);
+    if (!times.length || time > times.at(-1)) times.push(time);
+  }
+  if (times.at(-1) < sequence.duration) times.push(sequence.duration);
+  const poses = times.map((time) => sampleSequence(sequence, time));
+  const bones = [...new Set(poses.flatMap((pose) => Object.keys(pose)))].sort();
+  let over = false;
+  for (const bone of bones) {
+    for (let i = 1; i < poses.length; i += 1) {
+      const step = rotationDegrees(poses[i - 1][bone]?.rotation ?? REST_ROTATION, poses[i][bone]?.rotation ?? REST_ROTATION);
+      if (step > maxDegrees) { over = true; break; }
+    }
+    if (over) break;
+  }
+  if (!over) return sequence;
+  for (const bone of bones) {
+    let previous = poses[0][bone]?.rotation ?? REST_ROTATION;
+    for (let i = 1; i < poses.length; i += 1) {
+      const rotation = poses[i][bone]?.rotation ?? REST_ROTATION;
+      const step = rotationDegrees(previous, rotation);
+      const eased = easedDegrees(step, maxDegrees);
+      const limited = eased < step - 1e-9 ? slerp(previous, rotation, eased / step) : rotation;
+      poses[i] = {
+        ...poses[i],
+        [bone]: {...(poses[i][bone] ?? {}), rotation: limited},
+      };
+      previous = limited;
+    }
+  }
+  return {
+    duration: sequence.duration,
+    keyframes: times.map((time, index) => ({time, pose: poses[index], easing: 'linear'})),
+  };
+}
+
+function evaluatePose(sequence, seconds) {
+  if (sequence.loop) return evaluateLoopingPose(sequence, seconds, sequence.loopFade ?? LOOP_CROSSFADE_SECONDS);
+  return sampleSequence(sequence, seconds);
 }
 
 function evaluateExpressions(keys, localFrame) {
@@ -457,6 +611,9 @@ function evaluateActors(episode, shot, localFrame, camera, previousCamera) {
         shotStart: shot.startFrame,
         shotEnd: shot.startFrame + shot.durationFrames,
         music: episode.music ?? null,
+        liftDegrees: own(performance.reactivity, 'liftDegrees')
+          ? performance.reactivity.liftDegrees
+          : (episode.liftDegrees ?? 0),
       });
       pose = applied.pose;
       expressions = applied.expressions;
@@ -503,6 +660,8 @@ function evaluateValidated(episode, frame) {
       });
     }
   }
+  const pitchDegrees = own(shot.camera, 'pitchDegrees') ? shot.camera.pitchDegrees : (episode.pitchDegrees ?? 0);
+  if (pitchDegrees) camera = pitchCamera(camera, pitchDegrees);
   return {
     schema: EPISODE_SCHEMA,
     frame,
