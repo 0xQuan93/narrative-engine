@@ -402,8 +402,9 @@ export function blendPoses(left, right, weight) {
 /**
  * Seek-safe loop. The first pass plays straight until `duration - fade`.
  * Each seam then crossfades the end of the clip into a copy that has already
- * started at time 0, and the survivor continues from `fade`. The same time
- * always returns the same pose.
+ * started at time 0, and the survivor continues from `fade`. The blend weight
+ * is a smoothstep, so the weight velocity is zero at both ends of the fade.
+ * The same time always returns the same pose.
  */
 export function evaluateLoopingPose(sequence, seconds, fadeSeconds = LOOP_CROSSFADE_SECONDS) {
   const duration = sequence.duration;
@@ -416,7 +417,8 @@ export function evaluateLoopingPose(sequence, seconds, fadeSeconds = LOOP_CROSSF
   let into = since - Math.floor(since / period) * period;
   if (into >= period) into -= period;
   if (into <= fade) {
-    const amount = into / fade;
+    const u = into / fade;
+    const amount = u * u * (3 - 2 * u);
     return blendPoses(
       sampleSequence(sequence, intro + into),
       sampleSequence(sequence, into),
