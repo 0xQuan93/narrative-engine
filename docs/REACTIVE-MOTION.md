@@ -7,7 +7,7 @@ Script Studio can keep playing one PoseLab gesture and then the idle loop, and l
 - **Body:** PoseLab normalized JSON is sampled into per-frame humanoid keys. Script Studio plays the gesture once, then loops idle. `evaluatePose` slerps those keys. The stage resets the VRM and calls `humanoid.setNormalizedPose` for that frame only.
 - **Mouth:** spelling rules in `src/dialogue.mjs` pick `aa` / `ih` / `ou` / `ee` / `oh` and ramp the weight inside each cue. There is no audio file and no phoneme aligner.
 - **Camera:** cuts, medium, close, directed (creep, push, release, handheld, depth), and storyboard. None of that moved the body.
-- **Not running during a frame:** `vrm.lookAt.update()`, expression look presets as a second pass, and spring bones. Bone look-at eyes are written from the loaded range map inside the stage, once per frame. Spring bones stay at the imported rest on purpose. Their solver keeps the previous tail position, and Remotion may draw frames out of order.
+- **Not running during a frame:** `vrm.lookAt.update()` and expression look presets as a second pass. Bone look-at eyes are written from the loaded range map inside the stage, once per frame. Spring bones stay at the imported rest unless `episode.secondary.springWindowFrames` replays a fixed window from rest. The solver keeps the previous tail position, so an open-ended step would change pixels when Remotion draws frames out of order.
 
 ## Approach
 
@@ -94,14 +94,14 @@ These blocks are opt-in. An episode that does not set `music`, and whose perform
 
 ### `episode.music`
 
-Episode-absolute frames. `bpm` is required (40–300). `beats` holds up to 4096 items, strictly increasing, each with `frame` and `strength` (0–1). `downbeat` marks the “1”. `sections` holds up to 64 of `groove`, `hook`, `drop`, or `outro`, each with `energy` (0–1). `offsetSeconds` records where the slice sat in the source file. The renderer does not read it.
+Episode-absolute frames. `bpm` is required (40–300). `beats` holds up to 4096 items, strictly increasing, each with `frame` and `strength` (0–1). `downbeat` marks the “1”. `sections` holds up to 64 of `groove`, `hook`, `drop`, or `outro`, each with `energy` (0–1). Optional `intensityCues` (up to 256, duration 2–48) are episode-absolute kick marks. `offsetSeconds` records where the slice sat in the source file. The renderer does not read it.
 
 ```bash
 npm run import:beats -- beats.json --episode episode.json --out episode-music.json
 npm run import:beats -- song.mp3 --start 144.13 --duration 20 --fps 30 --out beats.json
 ```
 
-The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onset, beat track, kick energy under 150 Hz, downbeat by kick phase). It needs a local `python3` with `librosa` and `numpy`, and it fails with that message when they are missing. Rendering never calls it. Above about 130 BPM, set `groove.division` to `half`. At or under 100 BPM, `beat` is enough. `bar` keeps only downbeats.
+The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onset, beat track, kick energy under 150 Hz, downbeat by kick phase, then bar RMS and onset for sections). It needs a local `python3` with `librosa` and `numpy`, and it fails with that message when they are missing. Rendering never calls it. Above about 130 BPM, set `groove.division` to `half`. At or under 100 BPM, `beat` is enough. `bar` keeps only downbeats.
 
 ### `reactivity.groove`
 
@@ -131,13 +131,35 @@ Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They a
 
 Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on the exhale). Downbeats stronger than 0.8 add a short exhale, still under 0.2 combined. Nothing is added on a frame that already has a dialogue mouth cue, and nothing is added on every kick. The avatar needs an `oh` or `aa` preset (VRM 0 `o` / `a` alias). Those names are not optional: a face block on a rig without them fails at draw time, same as a script vowel the rig cannot play.
 
+### Camera follow
+
+`camera.follow` is opt-in on a shot. Without it the lens is unchanged.
+
+```json
+"follow": {"target": "head", "lagFrames": 4, "amount": 0.75, "margin": 0.12}
+```
+
+`target` is `head`. The evaluator estimates the head from the normalized pose (hips through head) and shifts the camera position and target by that delta, `lagFrames` earlier (0–12, default 3). Look still aims at the authored lens, so the eyes do not chase the lag. `amount` is 0–1. `margin` (0–0.5 m, default 0) pulls the camera back along the view and adds the same distance to depth-of-field focus, which is the hook extreme close-up fix when idle lean plus handheld walks the face off the frame. A starting point for that shot is lag 4, amount 0.75, margin 0.12. The shift is capped at 0.45 m. Follow does not look across a cut.
+
+### Hair
+
+`episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. The same frame is the same hair. Omit it and springs stay at the imported rest, which is what older episodes render. The window forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
+
+### Scenery
+
+`environment` may still be `"studio"` or `"depth-studio"`. It may also be `"night-roof"`, or `{ "base": "studio" | "depth-studio" | "night-roof", "lightPulse": 0–1 }`. A shot may set `environment` the same way and override the episode for that shot only. `night-roof` is a dark roof and three emissive windows, built in the stage, with no downloaded asset. `lightPulse` brightens the practicals on kick beats (strength at least 0.35, decay 8 frames) and leaves them at the rest color between hits. Episodes that stay on the original strings do not add this geometry and do not recolor lights.
+
+### Import
+
+`extract-beats.py` labels `groove`, `hook`, `drop`, and `outro` from per-bar RMS and onset. A short or flat slice stays one groove. A sustained rise is a hook. A sharp onset jump is a drop. A quiet tail is an outro. `npm run import:beats` also writes `music.intensityCues` from strong kicks when the beats file does not already have them. Groove nod size already follows each beat's kick `strength`. Those cues feed `face.mood: "intensity"` when the performance has no `intensityCues` of its own. They do not add a per-kick smile on the older nod path, and they do not change a take that has no `face` block.
+
 ### Camera, for authors
 
-This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
+This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. On the hook close-up, set `camera.follow` so idle lean and handheld do not walk the face out of frame. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
 
 ### What is still out of reach
 
-PoseLab’s Face AR / ARKit companion (MediaPipe, the 52 blendshapes, a LAN recorder) lives in PoseLab, not in this importer. This pass does not read a face take, does not drive brows or asymmetric smiles, and does not replace a recorded viseme track. Spring bones stay frozen. Scenery is still `studio` or `depth-studio`. There is no automatic shot list, no Rhubarb mouth import, no VRMA dance clip, and no Script Studio control for these blocks. Hair will not follow the nod until a later, seek-safe secondary pass.
+PoseLab’s Face AR / ARKit companion (MediaPipe, the 52 blendshapes, a LAN recorder) lives in PoseLab, not in this importer. This pass does not read a face take, does not drive brows or asymmetric smiles, and does not replace a recorded viseme track. There is no automatic shot list, no Rhubarb mouth import, no VRMA dance clip, and no Script Studio control for these blocks. Spring history longer than the window, scenery beyond `night-roof` plus a kick pulse, eye gain past the bone range map, and a camera that leads the eyes are still out.
 
 ## Check a Lively take locally
 

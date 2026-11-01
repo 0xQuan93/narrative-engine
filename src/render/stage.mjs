@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {VRMLoaderPlugin, VRMUtils} from '@pixiv/three-vrm';
-import {compileEpisode} from '../episode.mjs';
+import {compileEpisode, resolveEnvironment} from '../episode.mjs';
+import {practicalGain} from '../music.mjs';
+import {replaySprings} from './spring-window.mjs';
 import {axesForVrm, poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
@@ -11,9 +13,10 @@ import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {BokehPass} from 'three/addons/postprocessing/BokehPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
-// No clocks, animation mixers, random blinks, spring integration, or requestAnimationFrame.
-// Spring bones stay at their imported rest: the solver carries the previous tail
-// and would change pixels when Remotion seeks out of order. vrm.lookAt.update is
+// No clocks, animation mixers, random blinks, or requestAnimationFrame.
+// Spring bones stay at their imported rest unless episode.secondary sets
+// springWindowFrames. That path resets the solver and replays a fixed window
+// of evaluated poses, so a frame does not depend on seek order. vrm.lookAt.update is
 // not called. Bone look-at avatars get leftEye/rightEye from the loaded range map
 // before humanoid.update, which copies normalized bones onto the raw rig. A second
 // update would stomp those eyes. Expression look-at stays on blendshape weights.
@@ -106,11 +109,19 @@ export async function createStage({canvas, width, height, episode, assets, asset
   const rim = new THREE.DirectionalLight('#8ee9dc', 2);
   rim.position.set(0, 3, -3); scene.add(rim);
 
+  const dressing = [];
+  const practicals = [];
   const mesh = (geometry, color, x, y, z, emissive = false) => {
     const material = emissive ? new THREE.MeshBasicMaterial({color})
       : new THREE.MeshStandardMaterial({color, roughness: 0.8, metalness: 0.15});
     const object = new THREE.Mesh(geometry, material);
-    object.position.set(x, y, z); scene.add(object); return object;
+    object.position.set(x, y, z); scene.add(object); dressing.push(object); return object;
+  };
+  const markPractical = (object, peak) => {
+    object.userData.restColor = object.material.color.clone();
+    object.userData.peakColor = new THREE.Color(peak);
+    practicals.push(object);
+    return object;
   };
   const floor = mesh(new THREE.PlaneGeometry(60, 60), '#283237', 0, -0.025, 0);
   floor.rotation.x = -Math.PI / 2;
@@ -122,21 +133,50 @@ export async function createStage({canvas, width, height, episode, assets, asset
     mesh(new THREE.BoxGeometry(0.024, 3.2, 0.04), '#38616a', x, 1.7, -2.41, true);
   }
   mesh(new THREE.BoxGeometry(8, 0.022, 0.04), '#64878a', 0, 0.45, -2.4, true);
-  mesh(new THREE.SphereGeometry(0.19, 32, 16), '#e2bd83', 2.1, 1.8, -1.9, true);
+  markPractical(mesh(new THREE.SphereGeometry(0.19, 32, 16), '#e2bd83', 2.1, 1.8, -1.9, true), '#fff1c7');
   mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.6, 12), '#516168', 2.1, 0.8, -1.9);
-  if (episode.environment === 'depth-studio') {
+  const episodeEnv = resolveEnvironment(episode.environment);
+  const shotEnvs = episode.shots.map((shot) => resolveEnvironment(shot.environment ?? episode.environment));
+  const usesDepth = episodeEnv.base === 'depth-studio' || shotEnvs.some((env) => env.base === 'depth-studio');
+  const usesNight = episodeEnv.base === 'night-roof' || shotEnvs.some((env) => env.base === 'night-roof');
+  const usesPulse = episodeEnv.lightPulse > 0 || shotEnvs.some((env) => env.lightPulse > 0);
+  const studioBackground = new THREE.Color('#10191d');
+  const nightBackground = new THREE.Color('#070b14');
+  if (usesDepth) {
     // Deliberate depth cues behind the actor: thin edges and round practicals
     // reveal the circle-of-confusion in a matched sharp/blur comparison.
     for (const x of [-0.48, 0.48]) {
       mesh(new THREE.BoxGeometry(0.018, 1.65, 0.018), '#79d7dc', x, 1.38, -2.17, true);
       for (let i = 0; i < 6; i++) {
-        mesh(new THREE.SphereGeometry(0.038, 16, 12), i % 2 ? '#fac78f' : '#b6fcf4',
-          x + (x > 0 ? -0.10 : 0.10), 0.62 + i * 0.32, -2.11 - (i % 2) * 0.1, true);
+        markPractical(mesh(new THREE.SphereGeometry(0.038, 16, 12), i % 2 ? '#fac78f' : '#b6fcf4',
+          x + (x > 0 ? -0.10 : 0.10), 0.62 + i * 0.32, -2.11 - (i % 2) * 0.1, true), '#fff6e4');
       }
     }
     for (const x of [-0.31, 0.31]) {
       mesh(new THREE.BoxGeometry(0.012, 0.8, 0.016), '#497982', x, 1.62, -2.24, true);
     }
+  }
+  let nightGroup = null;
+  if (usesNight) {
+    nightGroup = new THREE.Group();
+    nightGroup.visible = false;
+    scene.add(nightGroup);
+    const nightMesh = (geometry, color, x, y, z, emissive = false) => {
+      const material = emissive ? new THREE.MeshBasicMaterial({color})
+        : new THREE.MeshStandardMaterial({color, roughness: 0.9, metalness: 0.05});
+      const object = new THREE.Mesh(geometry, material);
+      object.position.set(x, y, z);
+      nightGroup.add(object);
+      return object;
+    };
+    const roof = nightMesh(new THREE.PlaneGeometry(60, 60), '#141820', 0, -0.02, 0);
+    roof.rotation.x = -Math.PI / 2;
+    nightMesh(new THREE.BoxGeometry(18, 6, 0.2), '#0c1018', 0, 2.2, -4.2);
+    nightMesh(new THREE.BoxGeometry(16, 0.08, 0.4), '#1b2433', 0, 3.4, -4);
+    for (const [x, color] of [[-2.4, '#163a46'], [0.2, '#3a2a18'], [2.2, '#123044']]) {
+      markPractical(nightMesh(new THREE.BoxGeometry(0.7, 1.1, 0.05), color, x, 2.1, -4.05, true), '#d7fbff');
+    }
+    nightMesh(new THREE.SphereGeometry(0.16, 24, 16), '#d8e4ef', -3.4, 3.5, -3.2, true);
   }
 
   const avatars = new Map();
@@ -191,9 +231,54 @@ export async function createStage({canvas, width, height, episode, assets, asset
   renderer.setOpaqueSort(order.opaque);
   renderer.setTransparentSort(order.transparent);
 
+  function restoreRest(avatar) {
+    for (const entry of avatar.rest) {
+      entry.object.position.copy(entry.position);
+      entry.object.quaternion.copy(entry.quaternion);
+      entry.object.scale.copy(entry.scale);
+    }
+  }
+
+  function applyActorPose(actor, avatar) {
+    const {vrm} = avatar;
+    restoreRest(avatar);
+    vrm.humanoid.resetNormalizedPose();
+    const metaVersion = vrm.meta.metaVersion;
+    vrm.humanoid.setNormalizedPose(poseForVrm(actor.pose, metaVersion));
+    applyLoadedAim(vrm, actor.motion, metaVersion);
+    const boneEyes = applyBoneLook(vrm, actor.motion, metaVersion);
+    vrm.humanoid.update();
+    vrm.nodeConstraintManager?.update();
+    return boneEyes;
+  }
+
+  function applyActorExpressions(actor, avatar, boneEyes) {
+    const {vrm, authored} = avatar;
+    const expressions = boneEyes ? withoutLookBlendshapes(actor.expressions) : actor.expressions;
+    const weights = resolveExpressionWeights(
+      expressions,
+      (name) => Boolean(vrm.expressionManager?.getExpression(name)),
+      authored,
+      actor.id,
+    );
+    vrm.expressionManager?.resetValues();
+    for (const [name, weight] of weights) vrm.expressionManager.setValue(name, weight);
+    vrm.expressionManager?.update();
+  }
+
+  function poseActors(sample) {
+    const performing = new Set(episode.shots.find((shot) => shot.id === sample.shotId).performances.map((p) => p.actorId));
+    const boneEyes = new Map();
+    for (const actor of sample.actors) {
+      const avatar = avatars.get(actor.id);
+      avatar.wrapper.visible = performing.has(actor.id);
+      boneEyes.set(actor.id, applyActorPose(actor, avatar));
+    }
+    return boneEyes;
+  }
+
   function renderAtFrame(frame) {
     const state = evaluateFrame(frame);
-    const active = new Set(episode.shots.find((shot) => shot.id === state.shotId).performances.map((p) => p.actorId));
     camera.position.fromArray(state.camera.position);
     // Portrait exports keep the avatar and authored gestures within the
     // narrow viewport while preserving the scene's camera-cut directions.
@@ -202,31 +287,40 @@ export async function createStage({canvas, width, height, episode, assets, asset
     camera.lookAt(...state.camera.target);
     camera.rotateZ(THREE.MathUtils.degToRad(state.camera.rollDegrees ?? 0));
     camera.updateProjectionMatrix();
-    for (const actor of state.actors) {
-      const {vrm, wrapper, rest, authored} = avatars.get(actor.id);
-      wrapper.visible = active.has(actor.id);
-      for (const entry of rest) {
-        entry.object.position.copy(entry.position);
-        entry.object.quaternion.copy(entry.quaternion);
-        entry.object.scale.copy(entry.scale);
+    const windowFrames = episode.secondary?.springWindowFrames ?? 0;
+    const managers = windowFrames > 0
+      ? [...avatars.values()].map((avatar) => avatar.vrm.springBoneManager).filter((manager) => manager?.joints?.size)
+      : [];
+    let boneEyes;
+    if (managers.length) {
+      for (const avatar of avatars.values()) {
+        restoreRest(avatar);
+        avatar.vrm.humanoid.resetNormalizedPose();
       }
-      vrm.humanoid.resetNormalizedPose();
-      const metaVersion = vrm.meta.metaVersion;
-      vrm.humanoid.setNormalizedPose(poseForVrm(actor.pose, metaVersion));
-      applyLoadedAim(vrm, actor.motion, metaVersion);
-      const boneEyes = applyBoneLook(vrm, actor.motion, metaVersion);
-      vrm.humanoid.update();
-      vrm.nodeConstraintManager?.update();
-      const expressions = boneEyes ? withoutLookBlendshapes(actor.expressions) : actor.expressions;
-      const weights = resolveExpressionWeights(
-        expressions,
-        (name) => Boolean(vrm.expressionManager?.getExpression(name)),
-        authored,
-        actor.id,
-      );
-      vrm.expressionManager?.resetValues();
-      for (const [name, weight] of weights) vrm.expressionManager.setValue(name, weight);
-      vrm.expressionManager?.update();
+      scene.updateMatrixWorld(true);
+      replaySprings(managers, frame, windowFrames, 1 / episode.fps, (cursor) => {
+        const sample = cursor === frame ? state : evaluateFrame(cursor);
+        boneEyes = poseActors(sample);
+        scene.updateMatrixWorld(true);
+      });
+    } else {
+      boneEyes = poseActors(state);
+    }
+    for (const actor of state.actors) applyActorExpressions(actor, avatars.get(actor.id), boneEyes.get(actor.id));
+    const shot = episode.shots.find((entry) => entry.id === state.shotId);
+    const env = resolveEnvironment(shot.environment ?? episode.environment);
+    if (usesNight) {
+      const night = env.base === 'night-roof';
+      for (const object of dressing) object.visible = !night;
+      if (nightGroup) nightGroup.visible = night;
+      scene.background.copy(night ? nightBackground : studioBackground);
+      scene.fog.color.copy(night ? nightBackground : studioBackground);
+    }
+    if (usesPulse) {
+      const gain = practicalGain(state.frame, episode.music?.beats, env.lightPulse);
+      for (const object of practicals) {
+        object.material.color.copy(object.userData.restColor).lerp(object.userData.peakColor, gain);
+      }
     }
     scene.updateMatrixWorld(true);
     if (composer && state.camera.depthOfField?.aperture > 0) {

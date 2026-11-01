@@ -489,6 +489,113 @@ export function speakingAt(dialogue, frame) {
   return Boolean(dialogue?.mouthCues?.some((cue) => frame >= cue.startFrame && frame < cue.endFrame));
 }
 
+function round3(value) {
+  return Math.round(value * 1000) / 1000;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/**
+ * Label groove / hook / drop / outro from per-bar energy and onset.
+ * `bars` are `{frame, energy, onset}` in episode frames, one bar each.
+ * Fewer than four bars stays a single groove. A sustained rise is a hook.
+ * A sharp onset jump is a drop. A quiet tail of at least two bars is an outro.
+ * The same rules are ported in scripts/extract-beats.py.
+ */
+export function labelSections(bars) {
+  const clean = (Array.isArray(bars) ? bars : []).map((bar) => ({
+    frame: bar.frame,
+    energy: clamp01(bar.energy ?? 0),
+    onset: clamp01(bar.onset ?? 0),
+  })).filter((bar) => Number.isSafeInteger(bar.frame) && bar.frame >= 0);
+  clean.sort((left, right) => left.frame - right.frame);
+  if (!clean.length) return [{frame: 0, label: 'groove', energy: 0.6}];
+  if (clean.length < 4) {
+    const frame = clean[0].frame;
+    return [{frame, label: 'groove', energy: round3(average(clean.map((bar) => bar.energy)))}];
+  }
+  const smooth = clean.map((bar, index) => {
+    const window = clean.slice(Math.max(0, index - 1), Math.min(clean.length, index + 2));
+    return average(window.map((item) => item.energy));
+  });
+  const sorted = [...smooth].sort((left, right) => left - right);
+  const median = sorted[Math.floor((sorted.length - 1) / 2)];
+  const highCut = Math.max(median * 1.18, sorted[Math.floor(sorted.length * 0.7)] ?? 1);
+  const floor = median + 0.08;
+  const high = smooth.map((value) => value >= highCut && value >= floor);
+  const runs = [];
+  let start = -1;
+  for (let index = 0; index <= high.length; index += 1) {
+    if (index < high.length && high[index]) {
+      if (start < 0) start = index;
+    } else if (start >= 0) {
+      if (index - start >= 2) runs.push([start, index]);
+      start = -1;
+    }
+  }
+  const sections = [];
+  const push = (frame, label, energy) => {
+    const previous = sections.at(-1);
+    if (previous?.label === label) return;
+    sections.push({frame, label, energy: round3(clamp01(energy))});
+  };
+  const quietEnd = runs.length ? runs[0][0] : clean.length;
+  if (quietEnd > 0) push(0, 'groove', average(clean.slice(0, quietEnd).map((bar) => bar.energy)) || 0.6);
+  const peakOnset = clean.reduce((peak, bar) => Math.max(peak, bar.onset), 0);
+  for (let index = 0; index < runs.length; index += 1) {
+    const [from, to] = runs[index];
+    const previousEnergy = from > 0 ? clean[from - 1].energy : clean[from].energy;
+    const previousOnset = from > 0 ? clean[from - 1].onset : 0;
+    const jump = clean[from].energy - previousEnergy;
+    const onsetJump = clean[from].onset - previousOnset;
+    const spiked = jump >= 0.28 && onsetJump >= 0.35 && clean[from].onset >= Math.max(0.01, peakOnset) * 0.75;
+    const label = index === 0 ? (spiked ? 'drop' : 'hook') : (jump >= 0.15 ? 'drop' : 'hook');
+    push(clean[from].frame, label, average(clean.slice(from, to).map((bar) => bar.energy)));
+  }
+  if (runs.length) {
+    const tailStart = runs.at(-1)[1];
+    if (clean.length - tailStart >= 2) {
+      const tailEnergy = average(clean.slice(tailStart).map((bar) => bar.energy));
+      if (tailEnergy <= median * 0.95) push(clean[tailStart].frame, 'outro', tailEnergy);
+    }
+  }
+  if (!sections.length) return [{frame: 0, label: 'groove', energy: 0.6}];
+  if (sections[0].frame > 0) sections.unshift({frame: 0, label: 'groove', energy: sections[0].energy});
+  return sections;
+}
+
+/** Strong kicks as episode-absolute intensity cues. Groove nod size already uses beat strength. */
+export function kickCues(beats, limit = 64) {
+  const chosen = (beats ?? []).filter((beat) => {
+    const strength = beat.strength ?? 0;
+    return (beat.downbeat && strength >= 0.45) || strength >= 0.72;
+  });
+  const ranked = [...chosen].sort((left, right) => (right.strength ?? 0) - (left.strength ?? 0) || left.frame - right.frame);
+  return ranked.slice(0, limit).sort((left, right) => left.frame - right.frame).map((beat) => ({
+    frame: beat.frame,
+    intensity: round3(clamp01(beat.strength ?? 0)),
+    duration: 6,
+  }));
+}
+
+/** 0 at rest, up to `lightPulse` on a kick, back to 0 eight frames later. */
+export function practicalGain(frame, beats, lightPulse = 1) {
+  const pulse = clamp01(lightPulse);
+  if (pulse <= 0) return 0;
+  let level = 0;
+  for (const beat of beats ?? []) {
+    const age = frame - beat.frame;
+    if (age < 0 || age > 8) continue;
+    const strength = beat.strength ?? 0;
+    if (strength < 0.35) continue;
+    level = Math.max(level, strength * (1 - age / 8));
+  }
+  return clamp01(level) * pulse;
+}
+
 function validateBeats(beats, path, durationFrames) {
   if (!Array.isArray(beats) || beats.length > 4096) fail(path, 'expected at most 4096 beats');
   let previous = -1;
@@ -517,14 +624,29 @@ function validateSections(sections, path, durationFrames) {
   });
 }
 
+function validateIntensityCues(cues, path, durationFrames) {
+  if (!Array.isArray(cues) || cues.length > 256) fail(path, 'expected at most 256 intensity cues');
+  let previous = -1;
+  cues.forEach((cue, index) => {
+    const item = `${path}[${index}]`;
+    plainObject(cue, item, ['frame', 'intensity', 'duration']);
+    finite(cue.frame, `${item}.frame`, 0, durationFrames - 1, true);
+    if (cue.frame <= previous) fail(`${item}.frame`, 'intensity cues must be strictly increasing');
+    previous = cue.frame;
+    finite(cue.intensity, `${item}.intensity`, 0, 1);
+    finite(cue.duration, `${item}.duration`, 2, 48, true);
+  });
+}
+
 /** Validate episode.music. Absent means no musical timeline. */
 export function validateMusic(value, path, {durationFrames}) {
-  plainObject(value, path, ['schema', 'bpm', 'offsetSeconds', 'beats', 'sections'], ['bpm', 'beats']);
+  plainObject(value, path, ['schema', 'bpm', 'offsetSeconds', 'beats', 'sections', 'intensityCues'], ['bpm', 'beats']);
   if (own(value, 'schema') && value.schema !== MUSIC_SCHEMA) fail(`${path}.schema`, `expected ${MUSIC_SCHEMA}`);
   finite(value.bpm, `${path}.bpm`, 40, 300);
   if (own(value, 'offsetSeconds')) finite(value.offsetSeconds, `${path}.offsetSeconds`, 0, 100000);
   validateBeats(value.beats, `${path}.beats`, durationFrames);
   if (own(value, 'sections')) validateSections(value.sections, `${path}.sections`, durationFrames);
+  if (own(value, 'intensityCues')) validateIntensityCues(value.intensityCues, `${path}.intensityCues`, durationFrames);
   return value;
 }
 
@@ -592,12 +714,14 @@ export function normalizeImportedMusic(doc, durationFrames) {
     strength: defaultStrength(beat.strength),
     ...(beat.downbeat ? {downbeat: true} : {}),
   }));
+  const intensityCues = source.intensityCues ?? kickCues(beats);
   const music = {
     schema: MUSIC_SCHEMA,
     bpm: source.bpm,
     ...(source.offsetSeconds != null ? {offsetSeconds: source.offsetSeconds} : {}),
     beats,
     ...(source.sections ? {sections: source.sections} : {}),
+    ...(intensityCues.length ? {intensityCues} : {}),
   };
   validateMusic(music, 'music', {durationFrames});
   return music;

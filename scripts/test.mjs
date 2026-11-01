@@ -3,6 +3,7 @@
 await import('../tests/episode.test.mjs');
 await import('../tests/reactive-motion.test.mjs');
 await import('../tests/music.test.mjs');
+await import('../tests/stage-life.test.mjs');
 await import('../tests/camera-language.test.mjs');
 await import('../tests/assets.test.mjs');
 await import('../tests/jobs.test.mjs');
