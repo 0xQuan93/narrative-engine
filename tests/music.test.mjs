@@ -361,6 +361,7 @@ test('import-beats merges a beats file onto an episode and refuses to invent aud
   const written = JSON.parse(readFileSync(outPath, 'utf8'));
   assert.equal(written.music.bpm, 100);
   assert.equal(written.music.beats[1].downbeat, undefined);
+  assert.deepEqual(written.music.intensityCues, [{frame: 0, intensity: 0.8, duration: 6}]);
   assert.equal(written.shots[0].performances[0].reactivity.groove, undefined);
   const audio = spawnSync(process.execPath, [
     path.join(root, 'scripts/import-beats.mjs'), path.join(dir, 'missing.wav'),

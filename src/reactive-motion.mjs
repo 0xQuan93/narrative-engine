@@ -5,7 +5,9 @@
  * seek order. @pixiv/three-vrm applies the resulting normalized pose and
  * expression weights. It does not run VRMLookAt or spring bones here:
  * look-at appliers need the loaded rig (and would double-apply these offsets),
- * and spring bones integrate from the previous tail position.
+ * and spring bones integrate from the previous tail position. The stage
+ * can opt into a fixed-window replay (`episode.secondary`); this function
+ * still does not step the solver.
  *
  * Optional music life (`groove`, `eyes`, `body`, `face`, episode `music`)
  * is applied only when those blocks are present. Omitting them leaves this
@@ -16,7 +18,7 @@
  * a canonical T-pose right arm so tests can run without a VRM. At draw time
  * the stage re-solves that aim from the loaded arm rest (A-pose on typical
  * VRM 0) and, when look-at is bone-type, writes eye bones from the avatar's
- * range map. Spring bones stay frozen.
+ * range map. Spring bones stay frozen unless the stage replays a window.
  */
 
 import {canonicalExpressionName, resolveExpressionName} from './expression-names.mjs';
@@ -527,6 +529,9 @@ export function applyReactivity(input) {
     .filter((beat) => beat.frame >= shotStart && beat.frame < shotEnd);
   const intensityCues = episodeTimed(reactivity.intensityCues, shotStart)
     .filter((cue) => cue.frame >= shotStart && cue.frame < shotEnd);
+  const musicIntensity = (music?.intensityCues ?? [])
+    .filter((cue) => cue.frame >= shotStart && cue.frame < shotEnd);
+  const faceCues = intensityCues.length ? intensityCues : musicIntensity;
   let groove = null;
   if (reactivity.groove) {
     groove = sampleGroove({
@@ -617,7 +622,7 @@ export function applyReactivity(input) {
   if (reactivity.face) {
     const sections = (music?.sections ?? []).filter((section) => section.frame < shotEnd);
     const face = sampleFace({
-      frame, fps, face: reactivity.face, sections, intensityCues,
+      frame, fps, face: reactivity.face, sections, intensityCues: faceCues,
       downbeats: musicBeats.filter((beat) => beat.downbeat),
       speaking: speakingAt(dialogue, frame),
       expressionWeight, seed: reactivity.eyes?.seed ?? reactivity.groove?.seed ?? 0,

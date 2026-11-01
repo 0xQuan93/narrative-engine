@@ -14,13 +14,24 @@
  * top of the clip. Omit it and the pose matches the clip alone.
  * Optional episode.music plus reactivity groove/eyes/body/face add musical
  * life. Episodes that omit those blocks do not enter that path.
+ * Optional camera.follow, episode.secondary, and night-roof / lightPulse
+ * are also off unless those fields are set.
  */
 
 import {validateDialogue, evaluateDialogueAtFrame} from './dialogue.mjs';
 import {validateReactivity, applyReactivity} from './reactive-motion.mjs';
 import {validateMusic} from './music.mjs';
+import {applyCameraFollow, estimateHeadPosition} from './camera-follow.mjs';
 
 export const EPISODE_SCHEMA = 'narrative-episode/0.1';
+export const ENVIRONMENTS = Object.freeze(['studio', 'depth-studio', 'night-roof']);
+
+/** String environments stay `{base, lightPulse: 0}`. Absent means studio. */
+export function resolveEnvironment(value) {
+  if (value == null) return {base: 'studio', lightPulse: 0};
+  if (typeof value === 'string') return {base: value, lightPulse: 0};
+  return {base: value.base, lightPulse: value.lightPulse ?? 0};
+}
 
 const BONES = new Set([
   'hips', 'spine', 'chest', 'upperChest', 'neck', 'head', 'leftEye', 'rightEye', 'jaw',
@@ -164,12 +175,26 @@ function cameraMotion(value, durationFrames, base, path) {
   }
 }
 
+function validateEnvironment(value, path) {
+  if (typeof value === 'string') {
+    if (!ENVIRONMENTS.includes(value)) fail(path, 'unsupported environment');
+    return;
+  }
+  object(value, path, ['base', 'lightPulse'], ['base']);
+  if (!ENVIRONMENTS.includes(value.base)) fail(`${path}.base`, 'unsupported environment');
+  if (own(value, 'lightPulse')) number(value.lightPulse, `${path}.lightPulse`, 0, 1);
+}
+
 /** Validate the complete supported schema; returns its unchanged input. */
 export function validateEpisode(episode) {
-  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music'],
+  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary'],
     ['schema', 'fps', 'durationFrames', 'actors', 'shots']);
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
-  if (own(episode, 'environment') && !['studio', 'depth-studio'].includes(episode.environment)) fail('episode.environment', 'unsupported environment');
+  if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
+  if (own(episode, 'secondary')) {
+    object(episode.secondary, 'episode.secondary', ['springWindowFrames'], ['springWindowFrames']);
+    number(episode.secondary.springWindowFrames, 'episode.secondary.springWindowFrames', 4, 48, true);
+  }
   number(episode.fps, 'episode.fps', 1, 240, true);
   number(episode.durationFrames, 'episode.durationFrames', 1, Number.MAX_SAFE_INTEGER, true);
   if (own(episode, 'music')) validateMusic(episode.music, 'episode.music', {durationFrames: episode.durationFrames});
@@ -188,7 +213,9 @@ export function validateEpisode(episode) {
   let expectedStart = 0;
   episode.shots.forEach((shot, i) => {
     const path = `episode.shots[${i}]`;
-    object(shot, path, ['id', 'startFrame', 'durationFrames', 'camera', 'performances']);
+    object(shot, path, ['id', 'startFrame', 'durationFrames', 'camera', 'performances', 'environment'],
+      ['id', 'startFrame', 'durationFrames', 'camera', 'performances']);
+    if (own(shot, 'environment')) validateEnvironment(shot.environment, `${path}.environment`);
     id(shot.id, `${path}.id`);
     if (shotIds.has(shot.id)) fail(`${path}.id`, 'duplicate shot');
     shotIds.add(shot.id);
@@ -197,7 +224,16 @@ export function validateEpisode(episode) {
     if (shot.startFrame !== expectedStart) fail(`${path}.startFrame`, 'shots must be ordered and contiguous (no gaps or overlaps)');
     expectedStart += shot.durationFrames;
     if (expectedStart > episode.durationFrames) fail(path, 'shot exceeds episode duration');
-    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld']);
+    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld', 'follow']);
+    if (own(shot.camera, 'follow')) {
+      const follow = shot.camera.follow;
+      const fp = `${path}.camera.follow`;
+      object(follow, fp, ['target', 'lagFrames', 'amount', 'margin'], ['target']);
+      if (follow.target !== 'head') fail(`${fp}.target`, 'unsupported follow target');
+      if (own(follow, 'lagFrames')) number(follow.lagFrames, `${fp}.lagFrames`, 0, 12, true);
+      if (own(follow, 'amount')) number(follow.amount, `${fp}.amount`, 0, 1);
+      if (own(follow, 'margin')) number(follow.margin, `${fp}.margin`, 0, 0.5);
+    }
     if (own(shot.camera, 'motion')) cameraMotion(shot.camera.motion, shot.durationFrames, shot.camera, `${path}.camera.motion`);
     if (own(shot.camera, 'handheld')) {
       const hp = `${path}.camera.handheld`;
@@ -391,14 +427,82 @@ export function compileEpisode(episode) {
   return (frame) => evaluateValidated(captured, frame);
 }
 
+function evaluateActors(episode, shot, localFrame, camera, previousCamera) {
+  const frame = shot.startFrame + localFrame;
+  const seconds = localFrame / episode.fps;
+  const dialogue = episode.dialogue ? evaluateDialogueAtFrame(episode.dialogue, frame) : null;
+  return episode.actors.map((actor, actorIndex) => {
+    const performance = shot.performances.find((entry) => entry.actorId === actor.id);
+    let pose = performance ? evaluatePose(performance.sequence, seconds) : {};
+    let expressions = {
+      ...(performance ? evaluateExpressions(performance.expressions, localFrame) : {}),
+      ...(dialogue && actor.id === episode.dialogue.actorId ? dialogue.mouth : {}),
+    };
+    let motion;
+    if (performance && own(performance, 'reactivity')) {
+      const applied = applyReactivity({
+        reactivity: performance.reactivity,
+        pose,
+        expressions,
+        frame,
+        fps: episode.fps,
+        camera,
+        previousCamera,
+        handheldStrength: shot.camera.handheld?.strength ?? 0,
+        dialogue: episode.dialogue ?? null,
+        dialogueState: dialogue,
+        isSpeaker: Boolean(dialogue && actor.id === episode.dialogue.actorId),
+        actorIndex,
+        actorCount: episode.actors.length,
+        shotStart: shot.startFrame,
+        shotEnd: shot.startFrame + shot.durationFrames,
+        music: episode.music ?? null,
+      });
+      pose = applied.pose;
+      expressions = applied.expressions;
+      motion = applied.motion;
+    }
+    return {
+      id: actor.id,
+      assetId: actor.assetId,
+      pose,
+      expressions,
+      ...(motion ? {motion} : {}),
+    };
+  });
+}
+
 function evaluateValidated(episode, frame) {
   number(frame, 'frame', 0, episode.durationFrames - 1, true);
   const shot = episode.shots.find((candidate) => frame < candidate.startFrame + candidate.durationFrames);
   const localFrame = frame - shot.startFrame;
   const seconds = localFrame / episode.fps;
-  const dialogue = episode.dialogue ? evaluateDialogueAtFrame(episode.dialogue, frame) : null;
-  const camera = evaluateCamera(shot.camera, localFrame, episode.fps);
+  let camera = evaluateCamera(shot.camera, localFrame, episode.fps);
   const previousCamera = evaluateCamera(shot.camera, Math.max(0, localFrame - 1), episode.fps);
+  const actors = evaluateActors(episode, shot, localFrame, camera, previousCamera);
+  if (shot.camera.follow) {
+    const follow = shot.camera.follow;
+    const subject = shot.performances[0];
+    const index = episode.actors.findIndex((actor) => actor.id === subject?.actorId);
+    if (index >= 0) {
+      const lag = follow.lagFrames ?? 3;
+      const lagLocal = Math.max(0, localFrame - lag);
+      const laggedActors = lagLocal === localFrame ? actors : evaluateActors(
+        episode,
+        shot,
+        lagLocal,
+        evaluateCamera(shot.camera, lagLocal, episode.fps),
+        evaluateCamera(shot.camera, Math.max(0, lagLocal - 1), episode.fps),
+      );
+      const count = episode.actors.length;
+      camera = applyCameraFollow(camera, {
+        head: estimateHeadPosition(laggedActors[index].pose, index, count),
+        restHead: estimateHeadPosition(null, index, count),
+        amount: follow.amount ?? 1,
+        margin: follow.margin ?? 0,
+      });
+    }
+  }
   return {
     schema: EPISODE_SCHEMA,
     frame,
@@ -406,44 +510,6 @@ function evaluateValidated(episode, frame) {
     localFrame,
     seconds,
     camera,
-    actors: episode.actors.map((actor, actorIndex) => {
-      const performance = shot.performances.find((entry) => entry.actorId === actor.id);
-      let pose = performance ? evaluatePose(performance.sequence, seconds) : {};
-      let expressions = {
-        ...(performance ? evaluateExpressions(performance.expressions, localFrame) : {}),
-        ...(dialogue && actor.id === episode.dialogue.actorId ? dialogue.mouth : {}),
-      };
-      let motion;
-      if (performance && own(performance, 'reactivity')) {
-        const applied = applyReactivity({
-          reactivity: performance.reactivity,
-          pose,
-          expressions,
-          frame,
-          fps: episode.fps,
-          camera,
-          previousCamera,
-          handheldStrength: shot.camera.handheld?.strength ?? 0,
-          dialogue: episode.dialogue ?? null,
-          dialogueState: dialogue,
-          isSpeaker: Boolean(dialogue && actor.id === episode.dialogue.actorId),
-          actorIndex,
-          actorCount: episode.actors.length,
-          shotStart: shot.startFrame,
-          shotEnd: shot.startFrame + shot.durationFrames,
-          music: episode.music ?? null,
-        });
-        pose = applied.pose;
-        expressions = applied.expressions;
-        motion = applied.motion;
-      }
-      return {
-        id: actor.id,
-        assetId: actor.assetId,
-        pose,
-        expressions,
-        ...(motion ? {motion} : {}),
-      };
-    }),
+    actors,
   };
 }
