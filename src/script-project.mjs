@@ -1,4 +1,4 @@
-import { blendPoses, compileEpisode, evaluateLoopingPose, IDLE_RESTART_SECONDS, LOOP_CROSSFADE_SECONDS, validateEpisode } from './episode.mjs';
+import { blendPoses, calmIdleSequence, compileEpisode, evaluateLoopingPose, IDLE_RESTART_SECONDS, LOOP_CROSSFADE_SECONDS, validateEpisode } from './episode.mjs';
 import { compileDialogue } from './dialogue.mjs';
 import { compileCameraMoves } from './camera-language.mjs';
 import { reactivityPreset } from './reactive-motion.mjs';
@@ -7,7 +7,7 @@ export const DEFAULT_SCRIPT_SETTINGS = Object.freeze({
   text: 'Welcome to the studio. This is a short first take using your avatar and your motion clips.',
   wordsPerMinute: 150, mouthStrength: 0.7, motion: 'wave-idle', camera: 'cuts',
   format: 'landscape', revealWordIndex: null, shotCameras: [],
-  reactivity: 'off', reactivityAmount: 1,
+  reactivity: 'off', reactivityAmount: 1, idleCalm: true,
 });
 export function validateScriptSettings(value) {
   const required = ['text', 'wordsPerMinute', 'mouthStrength', 'motion', 'camera'];
@@ -22,6 +22,7 @@ export function validateScriptSettings(value) {
   if (value.shotCameras !== undefined && (!Array.isArray(value.shotCameras) || value.shotCameras.length > 8 || value.shotCameras.some((camera) => !['wide', 'medium', 'close'].includes(camera)))) throw new Error('Shot cameras must be up to eight wide, medium or close choices');
   if (value.reactivity !== undefined && !['off', 'subtle', 'lively'].includes(value.reactivity)) throw new Error('Unsupported reactivity preset');
   if (value.reactivityAmount !== undefined && (!Number.isFinite(value.reactivityAmount) || value.reactivityAmount < 0 || value.reactivityAmount > 1)) throw new Error('Reactivity amount must be 0–1');
+  if (value.idleCalm !== undefined && typeof value.idleCalm !== 'boolean') throw new Error('Idle calm must be true or false');
   return { ...value, text: value.text.trim() };
 }
 
@@ -52,7 +53,8 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
   const firstIdle = settings.motion === 'wave-idle' ? waveFrames : 0;
   const handoffFrames = Math.max(1, Math.round(IDLE_RESTART_SECONDS * fps));
   const heldWave = firstIdle > 0 ? sampleWave(firstIdle - 1).actors[0].pose : null;
-  const idlePose = (frame) => evaluateLoopingPose(idle, Math.max(0, frame) / fps, LOOP_CROSSFADE_SECONDS);
+  const idleSource = settings.idleCalm === false ? idle : calmIdleSequence(idle, {fps});
+  const idlePose = (frame) => evaluateLoopingPose(idleSource, Math.max(0, frame) / fps, LOOP_CROSSFADE_SECONDS);
   const sample = (frame) => {
     if (frame < firstIdle) return sampleWave(frame).actors[0].pose;
     const idleFrame = frame - firstIdle;

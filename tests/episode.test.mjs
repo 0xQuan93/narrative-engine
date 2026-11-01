@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode } from '../src/episode.mjs';
+import { EPISODE_SCHEMA, calmIdleSequence, evaluateEpisodeAtFrame, validateEpisode } from '../src/episode.mjs';
 
 const sample = JSON.parse(readFileSync(new URL('./fixtures/technical-shot.json', import.meta.url), 'utf8'));
 const clone = (value) => structuredClone(value);
@@ -288,6 +288,40 @@ test('a looping clip crossfades the seam and seeks in any order', () => {
   bad.shots[0].performances[0].sequence.loop = true;
   bad.shots[0].performances[0].sequence.loopFade = 1.5;
   assert.throws(() => validateEpisode(bad), /loopFade/);
+});
+
+test('idle calm leaves a slow clip untouched and caps a one-frame spike', () => {
+  const yQuat = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const slow = {
+    duration: 2,
+    keyframes: [
+      {time: 0, pose: {head: {rotation: yQuat(0)}}, easing: 'linear'},
+      {time: 2, pose: {head: {rotation: yQuat(40)}}, easing: 'linear'},
+    ],
+  };
+  assert.equal(calmIdleSequence(slow, {fps: 30}), slow);
+  const spiked = {
+    duration: 1,
+    keyframes: [0, 1, 2, 3].map((frame) => ({
+      time: frame / 30,
+      pose: {leftUpperArm: {rotation: yQuat(frame === 2 ? 19 : 0)}},
+      easing: 'linear',
+    })),
+  };
+  spiked.duration = 3 / 30;
+  const calmed = calmIdleSequence(spiked, {fps: 30});
+  assert.deepEqual(calmIdleSequence(spiked, {fps: 30}), calmed);
+  const arm = (pose) => pose.leftUpperArm.rotation;
+  const step = (left, right) => {
+    const dot = Math.min(1, Math.abs(left.reduce((sum, value, index) => sum + value * right[index], 0)));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const steps = calmed.keyframes.slice(1).map((key, index) => step(arm(calmed.keyframes[index].pose), arm(key.pose)));
+  assert.ok(Math.max(...steps) <= 2.01, `calm step ${Math.max(...steps)}`);
+  assert.ok(step(arm(spiked.keyframes[1].pose), arm(spiked.keyframes[2].pose)) > 15);
 });
 
 test('overlapping shots and noninteger/out-of-range frame requests fail', () => {
