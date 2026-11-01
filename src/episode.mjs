@@ -208,9 +208,10 @@ function validateEnvironment(value, path) {
 
 /** Validate the complete supported schema; returns its unchanged input. */
 export function validateEpisode(episode) {
-  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary', 'pitchDegrees'],
+  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary', 'pitchDegrees', 'liftDegrees'],
     ['schema', 'fps', 'durationFrames', 'actors', 'shots']);
   if (own(episode, 'pitchDegrees')) number(episode.pitchDegrees, 'episode.pitchDegrees', -12, 12);
+  if (own(episode, 'liftDegrees')) number(episode.liftDegrees, 'episode.liftDegrees', -12, 12);
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
   if (own(episode, 'secondary')) {
@@ -607,6 +608,9 @@ function evaluateActors(episode, shot, localFrame, camera, previousCamera) {
         shotStart: shot.startFrame,
         shotEnd: shot.startFrame + shot.durationFrames,
         music: episode.music ?? null,
+        liftDegrees: own(performance.reactivity, 'liftDegrees')
+          ? performance.reactivity.liftDegrees
+          : (episode.liftDegrees ?? 0),
       });
       pose = applied.pose;
       expressions = applied.expressions;

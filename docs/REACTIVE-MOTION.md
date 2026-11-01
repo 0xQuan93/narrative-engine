@@ -153,13 +153,18 @@ Hook ECU recipe, on that shot only:
 },
 "reactivity": {
   "roll": {"scale": 0.25, "maxDegrees": 4},
+  "liftDegrees": 6,
   "face": {"mood": "sections", "gestures": false, "idleMouth": 0.03}
 }
 ```
 
 `gestures: false` is already the default when `face` is present. Leave `roll` off the medium shots.
 
-Neutral Idle holds the head a little lower than Happy Idle, so on that close-up the fringe can sit across the eyes. `pitchDegrees` (-12 to 12) is an opt-in lens pitch-up. Set it on the shot camera, or once on the episode as the fallback for shots that omit it. Positive degrees orbit the camera down around the target after `follow`, so the lens looks up under the fringe. The target and the distance stay put. The pose is unchanged, so `follow` lag, amount, and margin still apply, and `reactivity.roll` still caps the same twist. A shot that sets `pitchDegrees` to 0 keeps a flat lens even when the episode has a value. Omit both and existing cuts do not move. 4° is a starting point for the hook ECU:
+Neutral Idle holds the head a little lower than Happy Idle, so on that close-up the fringe can sit across the eyes. `pitchDegrees` (-12 to 12) is an opt-in lens pitch-up. Set it on the shot camera, or once on the episode as the fallback for shots that omit it. Positive degrees orbit the camera down around the target after `follow`, so the lens looks up under the fringe. The target and the distance stay put. The pose is unchanged, so `follow` lag, amount, and margin still apply, and `reactivity.roll` still caps the same twist. A shot that sets `pitchDegrees` to 0 keeps a flat lens even when the episode has a value. Omit both and existing cuts do not move. 4° is a starting point when the lens itself should look up under the fringe:
+
+`liftDegrees` (-12 to 12) is the other opt-in, and the one that moves the hair with the skull. Set it on the performance, or once on the episode. A shot value wins, including 0. Positive degrees pitch the face up in engine space: YXZ pitch decreases, split 65% head and 35% neck, eased over the first 10 frames, with the neck two frames ahead. Roll is rewritten around the same yaw and roll, so a `reactivity.roll` cap stays put, and `camera.follow` still tracks the lifted head.
+
+On source VRM 0, Neutral Idle's head-forward elevation averages about −5.1° and Happy Idle about +20.9° (the sign flips for source VRM 1). A positive lift moves a source-0 Neutral head toward that higher Happy Idle line. It does not close the whole 26° gap: 6° of head-bone pitch raised elevation about 5.9° in a direct check, and this field only puts 65% of the degrees on the head. 4–6° is the hook ECU start. Use a negative value for a source-1 conversion. Omit it and the pose does not change.
 
 ```json
 "camera": {

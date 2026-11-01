@@ -569,7 +569,7 @@ export function applyReactivity(input) {
     reactivity, pose, expressions, frame, fps, camera, previousCamera,
     handheldStrength = 0, dialogue = null, dialogueState = null, isSpeaker = false,
     actorIndex = 0, actorCount = 1, shotStart = 0, shotEnd = Number.MAX_SAFE_INTEGER,
-    music = null,
+    music = null, liftDegrees = 0,
   } = input;
   const headWeight = reactivity.head ?? 0.7;
   const torsoWeight = reactivity.torso ?? 0.35;
@@ -752,6 +752,17 @@ export function applyReactivity(input) {
 
   const nodLevel = clamp01(Math.max(levels.nod, groove?.head ?? 0));
   if (reactivity.roll) limitPoseRoll(outPose, reactivity.roll);
+  if (liftDegrees) {
+    const since = frame - shotStart;
+    const rise = (lead) => {
+      const x = clamp((since + lead) / 10, 0, 1);
+      return x * x * (3 - 2 * x);
+    };
+    // Positive lift pitches the face up. YXZ pitch is positive when looking down.
+    const rad = -liftDegrees * Math.PI / 180;
+    addPitch(outPose, 'neck', rad * 0.35 * rise(2));
+    addPitch(outPose, 'head', rad * 0.65 * rise(0));
+  }
   return {
     pose: outPose,
     expressions: outExpressions,
@@ -769,6 +780,14 @@ export function applyReactivity(input) {
       ...(aimMotion ? {aim: aimMotion} : {}),
     },
   };
+}
+
+function addPitch(pose, bone, pitch) {
+  if (Math.abs(pitch) < 1e-8) return;
+  const rotation = pose[bone]?.rotation ?? REST;
+  const euler = eulerYXZ(rotation);
+  const position = pose[bone]?.position ? [...pose[bone].position] : [0, 0, 0];
+  pose[bone] = {rotation: quatYXZ(euler.yaw, euler.pitch + pitch, euler.roll), position};
 }
 
 function fadeBone(pose, bone, amount) {
@@ -841,7 +860,7 @@ function timedList(value, path, shotStart, shotEnd, fields, required) {
 export function validateReactivity(value, path, {shotDuration, episodeDuration}) {
   plainObject(value, path, [
     'look', 'interest', 'head', 'torso', 'arm', 'expression', 'autoBeats', 'armDelayFrames', 'beats', 'intensityCues',
-    'groove', 'eyes', 'body', 'face', 'roll', 'gestureFace',
+    'groove', 'eyes', 'body', 'face', 'roll', 'gestureFace', 'liftDegrees',
   ], ['look']);
   if (!LOOKS.has(value.look)) fail(`${path}.look`, 'unsupported look mode');
   if (value.look === 'interest') {
@@ -853,6 +872,7 @@ export function validateReactivity(value, path, {shotDuration, episodeDuration})
   }
   if (own(value, 'autoBeats') && typeof value.autoBeats !== 'boolean') fail(`${path}.autoBeats`, 'expected a boolean');
   if (own(value, 'gestureFace')) finite(value.gestureFace, `${path}.gestureFace`, 0, 1);
+  if (own(value, 'liftDegrees')) finite(value.liftDegrees, `${path}.liftDegrees`, -12, 12);
   if (own(value, 'armDelayFrames')) finite(value.armDelayFrames, `${path}.armDelayFrames`, 0, episodeDuration, true);
   if (own(value, 'beats')) timedList(value.beats, `${path}.beats`, 0, shotDuration, ['frame', 'kind', 'strength', 'duration'], ['frame', 'kind']);
   if (own(value, 'intensityCues')) {

@@ -426,6 +426,44 @@ test('pitchDegrees lifts the lens after follow and stays off unless asked', () =
   assert.deepEqual(evaluateEpisodeAtFrame(lifted, 21), sequential[0]);
 });
 
+test('liftDegrees raises the head over the shot start and leaves roll capped', () => {
+  const roll = quatYXZ(0.1, -0.05, 0.5);
+  const sequence = {duration: 2, keyframes: [
+    {time: 0, pose: {head: {rotation: [...roll]}, neck: {rotation: [...roll]}, spine: {rotation: quatYXZ(0, 0, 0.4)}}, easing: 'step'},
+    {time: 2, pose: {head: {rotation: [...roll]}, neck: {rotation: [...roll]}, spine: {rotation: quatYXZ(0, 0, 0.4)}}},
+  ]};
+  const plain = episode((value) => {
+    value.durationFrames = 60;
+    value.shots[0].durationFrames = 60;
+    value.shots[0].performances[0].sequence = sequence;
+    value.shots[0].performances[0].reactivity = {
+      look: 'off', head: 0, torso: 0, arm: 0, expression: 0, autoBeats: false,
+      roll: {maxDegrees: 4},
+    };
+    value.shots[0].camera.follow = {target: 'head', lagFrames: 0, amount: 1, margin: 0};
+  });
+  const raised = structuredClone(plain);
+  raised.liftDegrees = 6;
+  const held = evaluateEpisodeAtFrame(plain, 20);
+  const opened = evaluateEpisodeAtFrame(raised, 0);
+  const arrived = evaluateEpisodeAtFrame(raised, 20);
+  close(eulerYXZ(opened.actors[0].pose.head.rotation).pitch, eulerYXZ(held.actors[0].pose.head.rotation).pitch, 1e-4);
+  const arrivedPitch = eulerYXZ(arrived.actors[0].pose.head.rotation).pitch;
+  close(arrivedPitch, eulerYXZ(held.actors[0].pose.head.rotation).pitch - 6 * 0.65 * Math.PI / 180, 1e-3);
+  close(Math.abs(eulerYXZ(arrived.actors[0].pose.head.rotation).roll), 4 * Math.PI / 180, 1e-3);
+  close(Math.abs(eulerYXZ(arrived.actors[0].pose.neck.rotation).roll), 4 * Math.PI / 180, 1e-3);
+  const stuck = structuredClone(raised);
+  delete stuck.shots[0].camera.follow;
+  assert.ok(Math.abs(arrived.camera.target[0] - evaluateEpisodeAtFrame(stuck, 20).camera.target[0]) > 0.01);
+  const overridden = structuredClone(raised);
+  overridden.shots[0].performances[0].reactivity.liftDegrees = 0;
+  close(eulerYXZ(evaluateEpisodeAtFrame(overridden, 20).actors[0].pose.head.rotation).pitch, eulerYXZ(held.actors[0].pose.head.rotation).pitch, 1e-4);
+  assert.throws(() => validateEpisode(episode((value) => { value.liftDegrees = 13; })), /liftDegrees/);
+  const again = evaluateEpisodeAtFrame(raised, 20);
+  assert.deepEqual(evaluateEpisodeAtFrame(raised, 0), opened);
+  assert.deepEqual(again, arrived);
+});
+
 test('a close-up can tame idle head roll without changing the next shot', () => {
   const roll = quatYXZ(0.15, -0.2, 0.5);
   const read = eulerYXZ(roll);
