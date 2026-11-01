@@ -1,0 +1,445 @@
+{
+  "frames": {
+    "0": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0
+      },
+      "motion": {
+        "intensity": 0,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": null,
+        "nod": 0,
+        "point": 0,
+        "lean": 0
+      }
+    },
+    "6": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.020000000000000004,
+            0,
+            0
+          ]
+        },
+        "spine": {
+          "rotation": [
+            0.014569656113243564,
+            0,
+            0,
+            0.999893856927195
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "chest": {
+          "rotation": [
+            0.014569656113243564,
+            0,
+            0,
+            0.999893856927195
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "neck": {
+          "rotation": [
+            0.026626435241198197,
+            0,
+            0,
+            0.999645453621606
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "head": {
+          "rotation": [
+            0.06386749813625238,
+            0,
+            0,
+            0.9979583872495966
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0.8024139366239766,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0,
+        "happy": 0.20970796184308135
+      },
+      "motion": {
+        "intensity": 0.9106357265304582,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": "nod",
+        "nod": 0.6657395614066075,
+        "point": 0,
+        "lean": 0
+      }
+    },
+    "10": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.03333333333333333,
+            0,
+            0
+          ]
+        },
+        "spine": {
+          "rotation": [
+            0.004147091349414252,
+            0,
+            0,
+            0.9999914007796965
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "chest": {
+          "rotation": [
+            0.004147091349414252,
+            0,
+            0,
+            0.9999914007796965
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0
+      },
+      "motion": {
+        "intensity": 0.2591939522941157,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": null,
+        "nod": 0,
+        "point": 0,
+        "lean": 0
+      }
+    },
+    "16": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.05333333333333334,
+            0,
+            0
+          ]
+        },
+        "neck": {
+          "rotation": [
+            0.039989334186634175,
+            0,
+            0,
+            0.999200106660978
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "head": {
+          "rotation": [
+            0.09435941135177324,
+            0,
+            0,
+            0.9955381969012274
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0,
+        "happy": 0.315
+      },
+      "motion": {
+        "intensity": 0,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": "nod",
+        "nod": 1,
+        "point": 0,
+        "lean": 0
+      }
+    },
+    "24": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.08000000000000002,
+            0,
+            0
+          ]
+        },
+        "spine": {
+          "rotation": [
+            0.010408004372981778,
+            -0.00897764618841616,
+            0.0000934482089499152,
+            0.9999055288282588
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "chest": {
+          "rotation": [
+            0.010408423876637795,
+            0,
+            0,
+            0.9999458308890559
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0.5448559295108308,
+        "surprised": 0.21603921634405118
+      },
+      "motion": {
+        "intensity": 0.6505382386916236,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": "point",
+        "nod": 0,
+        "point": 0.5611408216728602,
+        "lean": 0
+      }
+    },
+    "34": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.11333333333333334,
+            0,
+            0
+          ]
+        },
+        "spine": {
+          "rotation": [
+            0.013999022766797908,
+            -0.003203981969811685,
+            0.000044857242460559335,
+            0.9998968746070466
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        },
+        "chest": {
+          "rotation": [
+            0.013999094634922904,
+            0,
+            0,
+            0.9999020078734727
+          ],
+          "position": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0,
+        "surprised": 0.07710350361586298,
+        "blink": 0.7
+      },
+      "motion": {
+        "intensity": 0.8749719949915413,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": "point",
+        "nod": 0,
+        "point": 0.20026884056068306,
+        "lean": 0
+      }
+    },
+    "40": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.13333333333333333,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0
+      },
+      "motion": {
+        "intensity": 0,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": null,
+        "nod": 0,
+        "point": 0,
+        "lean": 0
+      }
+    },
+    "52": {
+      "id": "a",
+      "assetId": "synthetic",
+      "pose": {
+        "hips": {
+          "rotation": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "position": [
+            0.17333333333333334,
+            0,
+            0
+          ]
+        }
+      },
+      "expressions": {
+        "aa": 0,
+        "ih": 0,
+        "ou": 0,
+        "ee": 0,
+        "oh": 0
+      },
+      "motion": {
+        "intensity": 0,
+        "lookYaw": 0,
+        "lookPitch": 0,
+        "beat": null,
+        "nod": 0,
+        "point": 0,
+        "lean": 0
+      }
+    }
+  }
+}

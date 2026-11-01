@@ -12,10 +12,13 @@
  * Assets are opaque actor assetId references, resolved outside this core.
  * Optional performance.reactivity adds look, beat, and expression offsets on
  * top of the clip. Omit it and the pose matches the clip alone.
+ * Optional episode.music plus reactivity groove/eyes/body/face add musical
+ * life. Episodes that omit those blocks do not enter that path.
  */
 
 import {validateDialogue, evaluateDialogueAtFrame} from './dialogue.mjs';
 import {validateReactivity, applyReactivity} from './reactive-motion.mjs';
+import {validateMusic} from './music.mjs';
 
 export const EPISODE_SCHEMA = 'narrative-episode/0.1';
 
@@ -163,12 +166,13 @@ function cameraMotion(value, durationFrames, base, path) {
 
 /** Validate the complete supported schema; returns its unchanged input. */
 export function validateEpisode(episode) {
-  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment'],
+  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music'],
     ['schema', 'fps', 'durationFrames', 'actors', 'shots']);
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment') && !['studio', 'depth-studio'].includes(episode.environment)) fail('episode.environment', 'unsupported environment');
   number(episode.fps, 'episode.fps', 1, 240, true);
   number(episode.durationFrames, 'episode.durationFrames', 1, Number.MAX_SAFE_INTEGER, true);
+  if (own(episode, 'music')) validateMusic(episode.music, 'episode.music', {durationFrames: episode.durationFrames});
   array(episode.actors, 'episode.actors', 1);
   const actorIds = new Set();
   episode.actors.forEach((actor, i) => {
@@ -427,6 +431,7 @@ function evaluateValidated(episode, frame) {
           actorCount: episode.actors.length,
           shotStart: shot.startFrame,
           shotEnd: shot.startFrame + shot.durationFrames,
+          music: episode.music ?? null,
         });
         pose = applied.pose;
         expressions = applied.expressions;
