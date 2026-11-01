@@ -16,15 +16,18 @@ export const SPRING_SETTLE_FRAMES = 24;
  * Safer response for music nods. Low-drag VRM strands keep a nod's inertia and
  * stay lifted; these raise drag, gravity, and stiffness, then cap how far a
  * joint may rotate from the bind pose. Omit a field to use the default.
- * Set springGravity to 1, springDrag to 0, springStiffness to 1, and
- * springMaxDegrees to 90 to keep the avatar's authored spring settings.
+ * Set springGravity to 1, springDrag to 0, springStiffness to 1,
+ * springMaxDegrees to 90, and springMaxStepDegrees to 45 to keep the
+ * avatar's authored spring settings.
  */
-export const SPRING_GRAVITY = 1.8;
-export const SPRING_GRAVITY_FLOOR = 0.35;
-export const SPRING_DRAG = 0.55;
-export const SPRING_STIFFNESS = 1.25;
-export const SPRING_STIFFNESS_FLOOR = 0.12;
-export const SPRING_MAX_DEGREES = 32;
+export const SPRING_GRAVITY = 2.8;
+export const SPRING_GRAVITY_FLOOR = 1.4;
+export const SPRING_DRAG = 0.82;
+export const SPRING_STIFFNESS = 1.6;
+export const SPRING_STIFFNESS_FLOOR = 0.4;
+export const SPRING_MAX_DEGREES = 12;
+/** Per simulation step. Stops a nod from whipping a thin strand sideways. */
+export const SPRING_MAX_STEP_DEGREES = 8;
 
 const tunedManagers = new WeakSet();
 
@@ -56,6 +59,7 @@ function captureRest(managers) {
       bone.userData ??= {};
       const q = bone.quaternion;
       bone.userData.narrativeSpringRest = [q.x, q.y, q.z, q.w];
+      bone.userData.narrativeSpringPrev = [q.x, q.y, q.z, q.w];
     }
   }
 }
@@ -93,6 +97,32 @@ function slerpComponents(from, to, t) {
   ];
 }
 
+function quatAngle(from, to) {
+  const dot = Math.abs(from[0] * to[0] + from[1] * to[1] + from[2] * to[2] + from[3] * to[3]);
+  return 2 * Math.acos(Math.min(1, dot));
+}
+
+/** Keep the verlet tails on the clamped bone so the next step does not undo it. */
+function plantSpringJoint(joint) {
+  const bone = joint.bone;
+  if (!bone || !joint._currentTail || !joint._initialLocalChildPosition || typeof joint._getMatrixWorldToCenter !== 'function') return;
+  bone.updateMatrix();
+  if (bone.parent) bone.matrixWorld.multiplyMatrices(bone.parent.matrixWorld, bone.matrix);
+  else bone.matrixWorld.copy(bone.matrix);
+  bone.localToWorld(joint._currentTail.copy(joint._initialLocalChildPosition)).applyMatrix4(joint._getMatrixWorldToCenter());
+  joint._prevTail?.copy(joint._currentTail);
+}
+
+function pullQuaternion(bone, toward, maxRadians) {
+  const q = bone.quaternion;
+  const current = [q.x, q.y, q.z, q.w];
+  const angle = quatAngle(toward, current);
+  if (angle <= maxRadians + 1e-4) return false;
+  const next = slerpComponents(toward, current, maxRadians / angle);
+  q.set(next[0], next[1], next[2], next[3]);
+  return true;
+}
+
 /** Pull each joint back toward the rotation it had just after reset(). */
 export function clampSpringDisplacement(managers, maxRadians) {
   if (!Number.isFinite(maxRadians) || maxRadians < 0) return;
@@ -101,32 +131,59 @@ export function clampSpringDisplacement(managers, maxRadians) {
       const bone = joint.bone;
       const rest = bone?.userData?.narrativeSpringRest;
       if (!rest || !bone.quaternion) continue;
-      const q = bone.quaternion;
-      const current = [q.x, q.y, q.z, q.w];
-      const dot = Math.abs(rest[0] * current[0] + rest[1] * current[1] + rest[2] * current[2] + rest[3] * current[3]);
-      const angle = 2 * Math.acos(Math.min(1, dot));
-      if (angle <= maxRadians + 1e-4) continue;
-      const next = slerpComponents(rest, current, maxRadians / angle);
-      q.set(next[0], next[1], next[2], next[3]);
+      if (pullQuaternion(bone, rest, maxRadians)) plantSpringJoint(joint);
     }
   }
 }
 
-export function replaySprings(managers, frame, windowFrames, delta, applyFrame, {settleFrames = SPRING_SETTLE_FRAMES, maxRadians} = {}) {
+function clampSpringStep(managers, maxStepRadians) {
+  if (!Number.isFinite(maxStepRadians) || maxStepRadians < 0) return;
+  for (const manager of managers) {
+    for (const joint of manager.joints ?? []) {
+      const bone = joint.bone;
+      const prev = bone?.userData?.narrativeSpringPrev;
+      if (!prev || !bone.quaternion) continue;
+      if (pullQuaternion(bone, prev, maxStepRadians)) plantSpringJoint(joint);
+      const q = bone.quaternion;
+      bone.userData.narrativeSpringPrev = [q.x, q.y, q.z, q.w];
+    }
+  }
+}
+
+function constrainSprings(managers, maxRadians, maxStepRadians) {
+  if (Number.isFinite(maxStepRadians)) clampSpringStep(managers, maxStepRadians);
+  if (Number.isFinite(maxRadians)) clampSpringDisplacement(managers, maxRadians);
+  if (Number.isFinite(maxStepRadians)) {
+    for (const manager of managers) {
+      for (const joint of manager.joints ?? []) {
+        const bone = joint.bone;
+        if (!bone?.quaternion) continue;
+        const q = bone.quaternion;
+        bone.userData.narrativeSpringPrev = [q.x, q.y, q.z, q.w];
+      }
+    }
+  }
+}
+
+export function replaySprings(managers, frame, windowFrames, delta, applyFrame, {
+  settleFrames = SPRING_SETTLE_FRAMES, maxRadians, maxStepRadians,
+} = {}) {
   const start = Math.max(0, frame - windowFrames + 1);
   const settle = Math.max(0, settleFrames);
+  const limited = Number.isFinite(maxRadians) || Number.isFinite(maxStepRadians);
   // reset() samples the current parent matrices. Callers restore the bind pose first.
   for (const manager of managers) manager.reset();
-  if (Number.isFinite(maxRadians)) captureRest(managers);
+  if (limited) captureRest(managers);
+  const integrate = () => {
+    for (const manager of managers) manager.update(delta);
+    if (limited) constrainSprings(managers, maxRadians, maxStepRadians);
+  };
   if (settle > 0) {
     applyFrame(start);
-    for (let step = 0; step < settle; step += 1) {
-      for (const manager of managers) manager.update(delta);
-    }
+    for (let step = 0; step < settle; step += 1) integrate();
   }
   for (let cursor = start; cursor <= frame; cursor += 1) {
     applyFrame(cursor);
-    for (const manager of managers) manager.update(delta);
+    integrate();
   }
-  if (Number.isFinite(maxRadians)) clampSpringDisplacement(managers, maxRadians);
 }

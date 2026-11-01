@@ -11,7 +11,7 @@ import {EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode} from '../src/ep
 import {estimateHeadPosition} from '../src/camera-follow.mjs';
 import {kickCues, labelSections, practicalGain} from '../src/music.mjs';
 import {actorHeadPosition, eulerYXZ, limitRoll, quatYXZ} from '../src/reactive-motion.mjs';
-import {replaySprings, SPRING_DRAG, SPRING_GRAVITY_FLOOR, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
+import {replaySprings, SPRING_DRAG, SPRING_GRAVITY_FLOOR, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -367,11 +367,16 @@ test('spring response keeps a low-drag strand from staying lifted', () => {
   const softened = swing(tunedOnly, {settleFrames: 24});
   const heldBundle = rig();
   tuneSpringManager(heldBundle.manager, {});
-  const held = swing(heldBundle, {settleFrames: 24, maxRadians: 32 * Math.PI / 180});
-  const again = swing(heldBundle, {settleFrames: 24, maxRadians: 32 * Math.PI / 180});
-  assert.ok(lifted > 32 * Math.PI / 180, `untuned lift ${lifted}`);
-  assert.ok(softened < lifted, `tuned ${softened} raw ${lifted}`);
-  assert.ok(held <= 32 * Math.PI / 180 + 1e-3, `clamped lift ${held}`);
+  const cap = SPRING_MAX_DEGREES * Math.PI / 180;
+  const limited = {settleFrames: 24, maxRadians: cap, maxStepRadians: SPRING_MAX_STEP_DEGREES * Math.PI / 180};
+  const held = swing(heldBundle, limited);
+  const again = swing(heldBundle, limited);
+  assert.ok(SPRING_MAX_DEGREES <= 12);
+  assert.ok(SPRING_DRAG >= 0.8);
+  assert.ok(lifted > cap, `untuned lift ${lifted}`);
+  assert.ok(softened < lifted * 0.75, `tuned ${softened} raw ${lifted}`);
+  assert.ok(held <= cap + 1e-3, `clamped lift ${held}`);
+  assert.ok(held < lifted * 0.5, `clamped ${held} raw ${lifted}`);
   close(again, held, 1e-4);
   assert.throws(() => validateEpisode(episode((value) => {
     value.secondary = {springWindowFrames: 24, springMaxDegrees: 120};
