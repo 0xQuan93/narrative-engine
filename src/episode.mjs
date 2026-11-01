@@ -58,6 +58,13 @@ const REST_POSITION = [0, 0, 0];
  */
 export const LOOP_CROSSFADE_SECONDS = 0.3;
 export const IDLE_RESTART_SECONDS = 0.5;
+/**
+ * PoseLab's Neutral Idle stays under about 1.5°/frame on the body. Happy Idle
+ * does not: the left arm hits about 19°/frame and the head about 4.9°/frame
+ * inside each cycle. Script Studio caps a looping idle at this step unless
+ * the take opts out. Groove and other shot layers are not part of the cap.
+ */
+export const IDLE_CALM_MAX_DEGREES = 2;
 const own = (value, key) => Object.hasOwn(value, key);
 const fail = (path, message) => { throw new TypeError(`${path}: ${message}`); };
 
@@ -415,6 +422,60 @@ export function evaluateLoopingPose(sequence, seconds, fadeSeconds = LOOP_CROSSF
     );
   }
   return sampleSequence(sequence, fade + (into - fade));
+}
+
+function rotationDegrees(left, right) {
+  const a = normalized(left);
+  const b = normalized(right);
+  const dot = Math.min(1, Math.abs(a.reduce((sum, v, i) => sum + v * b[i], 0)));
+  return 2 * Math.acos(dot) * 180 / Math.PI;
+}
+
+/**
+ * One forward pass over a looping idle. Each rotation may move at most
+ * `maxDegrees` from the previous frame, which is how Neutral Idle already
+ * behaves and how a Happy Idle arm spike stops reading as a restart.
+ * A clip that is already under the cap is returned unchanged. The result
+ * depends only on the sequence, so a later seek does not replay the pass.
+ */
+export function calmIdleSequence(sequence, { fps = 30, maxDegrees = IDLE_CALM_MAX_DEGREES } = {}) {
+  if (!Number.isInteger(fps) || fps < 1 || fps > 240) throw new TypeError('fps must be an integer from 1 to 240');
+  if (!Number.isFinite(maxDegrees) || maxDegrees <= 0 || maxDegrees > 180) throw new TypeError('maxDegrees must be in (0, 180]');
+  const times = [];
+  const frameCount = Math.floor(sequence.duration * fps);
+  for (let frame = 0; frame <= frameCount; frame += 1) {
+    const time = Math.min(sequence.duration, frame / fps);
+    if (!times.length || time > times.at(-1)) times.push(time);
+  }
+  if (times.at(-1) < sequence.duration) times.push(sequence.duration);
+  const poses = times.map((time) => sampleSequence(sequence, time));
+  const bones = [...new Set(poses.flatMap((pose) => Object.keys(pose)))].sort();
+  let over = false;
+  for (const bone of bones) {
+    for (let i = 1; i < poses.length; i += 1) {
+      const step = rotationDegrees(poses[i - 1][bone]?.rotation ?? REST_ROTATION, poses[i][bone]?.rotation ?? REST_ROTATION);
+      if (step > maxDegrees) { over = true; break; }
+    }
+    if (over) break;
+  }
+  if (!over) return sequence;
+  for (const bone of bones) {
+    let previous = poses[0][bone]?.rotation ?? REST_ROTATION;
+    for (let i = 1; i < poses.length; i += 1) {
+      const rotation = poses[i][bone]?.rotation ?? REST_ROTATION;
+      const step = rotationDegrees(previous, rotation);
+      const limited = step > maxDegrees ? slerp(previous, rotation, maxDegrees / step) : rotation;
+      poses[i] = {
+        ...poses[i],
+        [bone]: {...(poses[i][bone] ?? {}), rotation: limited},
+      };
+      previous = limited;
+    }
+  }
+  return {
+    duration: sequence.duration,
+    keyframes: times.map((time, index) => ({time, pose: poses[index], easing: 'linear'})),
+  };
 }
 
 function evaluatePose(sequence, seconds) {

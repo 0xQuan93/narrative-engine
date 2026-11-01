@@ -113,3 +113,74 @@ test('idle wrap crossfades instead of seeking to the first frame', () => {
   }
   assert.ok(Math.max(...across) < 0.05, `handoff step ${Math.max(...across)}`);
 });
+
+test('idle bake caps a Happy Idle style mid-cycle spike and can keep it', () => {
+  const yQuat = (degrees) => {
+    const half = degrees * Math.PI / 360;
+    return [0, Math.sin(half), 0, Math.cos(half)];
+  };
+  const fps = 30;
+  const frames = 87;
+  const angle = (frame, start, count, step) => {
+    if (frame < start || frame >= start + count * 2) return 0;
+    const into = frame - start + 1;
+    return (into <= count ? into : count * 2 - into + 1) * step;
+  };
+  const idle = {
+    duration: frames / fps,
+    keyframes: Array.from({length: frames + 1}, (_, frame) => ({
+      time: frame / fps,
+      easing: 'linear',
+      pose: {
+        leftUpperArm: {rotation: yQuat(angle(frame, 15, 6, 19))},
+        head: {rotation: yQuat(angle(frame, 28, 3, 4.9))},
+        hips: {rotation: yQuat(angle(frame, 28, 3, 3))},
+      },
+    })),
+  };
+  const step = (left, right) => {
+    const dot = Math.min(1, Math.abs(left.reduce((sum, value, index) => sum + value * right[index], 0)));
+    return 2 * Math.acos(dot) * 180 / Math.PI;
+  };
+  const maxBone = (episode, bone) => {
+    const evaluate = compileEpisode(episode);
+    let max = 0;
+    for (let frame = 1; frame < episode.durationFrames; frame += 1) {
+      const before = evaluate(frame - 1).actors[0].pose[bone]?.rotation ?? [0, 0, 0, 1];
+      const after = evaluate(frame).actors[0].pose[bone]?.rotation ?? [0, 0, 0, 1];
+      max = Math.max(max, step(before, after));
+    }
+    return max;
+  };
+  const fixture = studioFixture();
+  const settings = {...DEFAULT_SCRIPT_SETTINGS, text: 'Hello.', motion: 'idle', camera: 'close'};
+  const calmed = createScriptEpisode({...fixture, idle, settings, minimumSeconds: 8});
+  assert.ok(maxBone(calmed, 'leftUpperArm') <= 2.05, `arm ${maxBone(calmed, 'leftUpperArm')}`);
+  assert.ok(maxBone(calmed, 'head') <= 2.05, `head ${maxBone(calmed, 'head')}`);
+  assert.ok(maxBone(calmed, 'hips') <= 2.05, `hips ${maxBone(calmed, 'hips')}`);
+  const sequential = compileEpisode(calmed);
+  for (const frame of [16, 50, 87 + 16, 87 + 29, 200]) {
+    assert.deepEqual(sequential(frame), compileEpisode(calmed)(frame));
+  }
+  const raw = createScriptEpisode({...fixture, idle, settings: {...settings, idleCalm: false}, minimumSeconds: 8});
+  assert.ok(maxBone(raw, 'leftUpperArm') > 15);
+  const wave = {
+    duration: 1,
+    keyframes: [0, 10, 11, 30].map((frame) => ({
+      time: frame / fps,
+      easing: 'linear',
+      pose: {leftUpperArm: {rotation: yQuat(frame >= 11 ? 19 : 0)}},
+    })),
+  };
+  const gestured = createScriptEpisode({
+    ...fixture, wave, idle,
+    settings: {...settings, motion: 'wave-idle', camera: 'medium'},
+    minimumSeconds: 8,
+  });
+  const gestureStep = step(
+    compileEpisode(gestured)(10).actors[0].pose.leftUpperArm.rotation,
+    compileEpisode(gestured)(11).actors[0].pose.leftUpperArm.rotation,
+  );
+  assert.ok(gestureStep > 15, `wave step ${gestureStep}`);
+  assert.throws(() => validateScriptSettings({...settings, idleCalm: 'no'}), /Idle calm/);
+});
