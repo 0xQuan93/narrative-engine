@@ -107,7 +107,7 @@ The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onse
 
 `{ "division": "half", "amount": 1, "phaseFrames": -1, "roll": 0.65, "seed": 1 }`. Division, amount, phase, roll, and seed can be omitted.
 
-Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° as `roll` goes from 0 to 1. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
+Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° as `roll` goes from 0 to 1. On an extreme close-up, a lower `roll` (about 0.2–0.4) keeps that sway inside the frame; the default stays 0.65. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
 
 When `episode.music` has beats in the shot, those beats drive the groove and any explicit `beats` still add with the older symmetric pulse. Dialogue `autoBeats` are unchanged. With no music beats in the shot, groove reshapes nod-kind `beats` (default division `beat`, so a list you already thinned to half-time is not thinned again) and does not also play the sine. `intensityCues` scale those reshaped nods. They do not open the mouth on every hit.
 
@@ -143,15 +143,17 @@ Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on 
 
 ### Hair
 
-`episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. The same frame is the same hair. Omit it and springs stay at the imported rest, which is what older episodes render. The window forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
+`episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. Before those poses it holds the window-start pose for `springSettleFrames` steps (default 24, range 0–48) so the jump from rest does not still ring in a short window. The same frame is the same hair. Omit `secondary` and springs stay at the imported rest.
+
+`springWindowFrames` 24 with that default settle is the usual setting. If a strand still flicks, raise the window to 32–48 so more of the actual nod is inside it; settle 0 is the old rest kick. The window still forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
 
 ### Scenery
 
-`environment` may still be `"studio"` or `"depth-studio"`. It may also be `"night-roof"`, or `{ "base": "studio" | "depth-studio" | "night-roof", "lightPulse": 0–1 }`. A shot may set `environment` the same way and override the episode for that shot only. `night-roof` is a dark roof and three emissive windows, built in the stage, with no downloaded asset. `lightPulse` brightens the practicals on kick beats (strength at least 0.35, decay 8 frames) and leaves them at the rest color between hits. Episodes that stay on the original strings do not add this geometry and do not recolor lights.
+`environment` may still be `"studio"` or `"depth-studio"`. It may also be `"night-roof"`, or `{ "base": "studio" | "depth-studio" | "night-roof", "lightPulse": 0–1 }`. A shot may set `environment` the same way and override the episode for that shot only. `night-roof` is a local sky, skyline, and midground practicals placed so a 20° close-up still has lit windows beside the head instead of a black field. `lightPulse` brightens those practicals on kick beats (strength at least 0.35, decay 8 frames) and leaves them at the rest color between hits. Episodes that stay on `studio` or `depth-studio` do not add this geometry and do not recolor lights.
 
 ### Import
 
-`extract-beats.py` labels `groove`, `hook`, `drop`, and `outro` from per-bar RMS and onset. A short or flat slice stays one groove. A sustained rise is a hook. A sharp onset jump is a drop. A quiet tail is an outro. `npm run import:beats` also writes `music.intensityCues` from strong kicks when the beats file does not already have them. Groove nod size already follows each beat's kick `strength`. Those cues feed `face.mood: "intensity"` when the performance has no `intensityCues` of its own. They do not add a per-kick smile on the older nod path, and they do not change a take that has no `face` block.
+`extract-beats.py` labels `groove`, `hook`, `drop`, and `outro` from per-bar RMS and onset. A short slice, or one whose bars stay within about 0.06 of each other, stays one groove. A sustained rise above the earlier bars is a hook even when the whole slice is already loud (around 0.7). A sharp onset jump is a drop. A quiet tail is an outro. `npm run import:beats` also writes `music.intensityCues` from strong kicks when the beats file does not already have them. Groove nod size already follows each beat's kick `strength`. Those cues feed `face.mood: "intensity"` when the performance has no `intensityCues` of its own. They do not add a per-kick smile on the older nod path, and they do not change a take that has no `face` block.
 
 ### Camera, for authors
 

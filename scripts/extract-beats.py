@@ -61,16 +61,38 @@ def label_sections(bars):
     high_cut = max(median * 1.18, sorted_energy[int(len(sorted_energy) * 0.7)])
     floor = median + 0.08
     high = [value >= high_cut and value >= floor for value in smooth]
-    runs = []
-    start = -1
-    for index in range(len(high) + 1):
-        if index < len(high) and high[index]:
-            if start < 0:
-                start = index
-        elif start >= 0:
-            if index - start >= 2:
-                runs.append((start, index))
-            start = -1
+    relative = []
+    for index, bar in enumerate(clean):
+        if index < 2 or index + 1 >= len(clean):
+            relative.append(False)
+            continue
+        baseline = average([item['energy'] for item in clean[:index]])
+        relative.append(bar['energy'] >= baseline + 0.06 and clean[index + 1]['energy'] >= baseline + 0.05)
+
+    def runs_of(flags):
+        found = []
+        start = -1
+        for index in range(len(flags) + 1):
+            if index < len(flags) and flags[index]:
+                if start < 0:
+                    start = index
+            elif start >= 0:
+                if index - start >= 2:
+                    found.append([start, index])
+                start = -1
+        return found
+
+    def merge_runs(found):
+        sorted_runs = sorted(found, key=lambda run: (run[0], run[1]))
+        merged = []
+        for run in sorted_runs:
+            if not merged or run[0] > merged[-1][1]:
+                merged.append([run[0], run[1]])
+            else:
+                merged[-1][1] = max(merged[-1][1], run[1])
+        return merged
+
+    runs = merge_runs(runs_of(high) + runs_of(relative))
     sections = []
 
     def push(frame, label, energy):
