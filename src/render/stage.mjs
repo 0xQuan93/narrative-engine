@@ -3,7 +3,7 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {VRMLoaderPlugin, VRMUtils} from '@pixiv/three-vrm';
 import {compileEpisode, resolveEnvironment} from '../episode.mjs';
 import {practicalGain} from '../music.mjs';
-import {replaySprings, SPRING_SETTLE_FRAMES} from './spring-window.mjs';
+import {replaySprings, SPRING_MAX_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from './spring-window.mjs';
 import {axesForVrm, poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
@@ -15,8 +15,9 @@ import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 
 // No clocks, animation mixers, random blinks, or requestAnimationFrame.
 // Spring bones stay at their imported rest unless episode.secondary sets
-// springWindowFrames. That path resets the solver and replays a fixed window
-// of evaluated poses, so a frame does not depend on seek order. vrm.lookAt.update is
+// springWindowFrames. That path resets the solver, replays a fixed window
+// of evaluated poses, and caps joint rotation from the bind pose, so a frame
+// does not depend on seek order. vrm.lookAt.update is
 // not called. Bone look-at avatars get leftEye/rightEye from the loaded range map
 // before humanoid.update, which copies normalized bones onto the raw rig. A second
 // update would stomp those eyes. Expression look-at stays on blendshape weights.
@@ -245,6 +246,9 @@ export async function createStage({canvas, width, height, episode, assets, asset
       // Frozen secondary bones retain their imported rest transforms.
       avatars.set(actor.id, {vrm, wrapper, rest, authored});
     }
+    if (episode.secondary?.springWindowFrames) {
+      for (const avatar of avatars.values()) tuneSpringManager(avatar.vrm.springBoneManager, episode.secondary);
+    }
   } catch (error) {
     dispose(); throw error;
   }
@@ -319,11 +323,15 @@ export async function createStage({canvas, width, height, episode, assets, asset
         avatar.vrm.humanoid.resetNormalizedPose();
       }
       scene.updateMatrixWorld(true);
+      const maxDegrees = episode.secondary?.springMaxDegrees ?? SPRING_MAX_DEGREES;
       replaySprings(managers, frame, windowFrames, 1 / episode.fps, (cursor) => {
         const sample = cursor === frame ? state : evaluateFrame(cursor);
         boneEyes = poseActors(sample);
         scene.updateMatrixWorld(true);
-      }, {settleFrames: episode.secondary?.springSettleFrames ?? SPRING_SETTLE_FRAMES});
+      }, {
+        settleFrames: episode.secondary?.springSettleFrames ?? SPRING_SETTLE_FRAMES,
+        maxRadians: maxDegrees * Math.PI / 180,
+      });
     } else {
       boneEyes = poseActors(state);
     }
