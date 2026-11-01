@@ -179,7 +179,8 @@ On source VRM 0, Neutral Idle's head-forward elevation averages about −5.1° a
 
 While `secondary` is on, each joint is tuned once so a music nod does not leave a thin accent standing or flicked out:
 
-- `springGravity` multiplies gravity (default 2.8) and, when the field is omitted, raises it to at least 1.4
+- `springGravity` multiplies gravity (default 2.8) and, when the field is omitted, raises it to at least 1.4. A fringe joint (name matching bang, fringe, maegami, front hair, or 前髪, or a bind tail in front of the head and above the eyes) keeps authored gravity with no floor, so the anti-lift boost does not drag the bangs over the eyes. Side and back hair keep the boost
+- `springFringeDegrees` caps that fringe cone (default 8 when the general cap is 12 or lower, otherwise the general cap; range 0–30)
 - `springDrag` is a drag floor (default 0.82)
 - `springStiffness` multiplies stiffness (default 1.6) and, when omitted, raises it to at least 0.4, which pulls the strand back toward its bind axis
 - `springMaxDegrees` caps local rotation from the bind pose (default 12, range 0–90)

@@ -217,7 +217,7 @@ export function validateEpisode(episode) {
   if (own(episode, 'secondary')) {
     object(episode.secondary, 'episode.secondary', [
       'springWindowFrames', 'springSettleFrames', 'springGravity', 'springDrag', 'springStiffness',
-      'springMaxDegrees', 'springMaxStepDegrees',
+      'springMaxDegrees', 'springMaxStepDegrees', 'springFringeDegrees',
     ], ['springWindowFrames']);
     number(episode.secondary.springWindowFrames, 'episode.secondary.springWindowFrames', 4, 48, true);
     if (own(episode.secondary, 'springSettleFrames')) {
@@ -231,6 +231,9 @@ export function validateEpisode(episode) {
     }
     if (own(episode.secondary, 'springMaxStepDegrees')) {
       number(episode.secondary.springMaxStepDegrees, 'episode.secondary.springMaxStepDegrees', 0, 45);
+    }
+    if (own(episode.secondary, 'springFringeDegrees')) {
+      number(episode.secondary.springFringeDegrees, 'episode.secondary.springFringeDegrees', 0, 30);
     }
   }
   number(episode.fps, 'episode.fps', 1, 240, true);

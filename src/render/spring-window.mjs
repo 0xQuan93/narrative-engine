@@ -26,8 +26,21 @@ export const SPRING_DRAG = 0.82;
 export const SPRING_STIFFNESS = 1.6;
 export const SPRING_STIFFNESS_FLOOR = 0.4;
 export const SPRING_MAX_DEGREES = 12;
+/** Front fringe stays on a tighter cone so the anti-lift boost is not what covers the eyes. */
+export const SPRING_FRINGE_MAX_DEGREES = 8;
 /** Per simulation step. Stops a nod from whipping a thin strand sideways. */
 export const SPRING_MAX_STEP_DEGREES = 8;
+
+const FRINGE_NAME = /bang|fringe|前髪|maegami|front[_ -]?hair|hair[_ -]?front/i;
+
+/** Front hair, by joint name or a bind tail that sits in front of the head and above the eyes. */
+export function isFringeSpringJoint(joint) {
+  const name = joint?.bone?.name ?? '';
+  if (FRINGE_NAME.test(name)) return true;
+  const tail = joint?.child?.position ?? joint?.initialLocalChildPosition;
+  if (!tail) return false;
+  return tail.z > 0.03 && tail.y > -0.06 && Math.abs(tail.x) < 0.15;
+}
 
 const tunedManagers = new WeakSet();
 
@@ -43,8 +56,14 @@ export function tuneSpringManager(manager, options = {}) {
   for (const joint of manager.joints ?? []) {
     const settings = joint.settings;
     if (!settings) continue;
-    const powered = (settings.gravityPower ?? 0) * gravity;
-    settings.gravityPower = raiseGravity ? Math.max(powered, SPRING_GRAVITY_FLOOR) : powered;
+    const fringe = isFringeSpringJoint(joint);
+    if (fringe && joint.bone) {
+      joint.bone.userData ??= {};
+      joint.bone.userData.narrativeFringe = true;
+    }
+    const scale = fringe && raiseGravity ? 1 : gravity;
+    const powered = (settings.gravityPower ?? 0) * scale;
+    settings.gravityPower = raiseGravity && !fringe ? Math.max(powered, SPRING_GRAVITY_FLOOR) : powered;
     settings.dragForce = Math.min(0.95, Math.max(settings.dragForce ?? 0, drag));
     const stiff = (settings.stiffness ?? 0) * stiffness;
     settings.stiffness = raiseStiffness ? Math.max(stiff, SPRING_STIFFNESS_FLOOR) : stiff;
@@ -124,14 +143,17 @@ function pullQuaternion(bone, toward, maxRadians) {
 }
 
 /** Pull each joint back toward the rotation it had just after reset(). */
-export function clampSpringDisplacement(managers, maxRadians) {
+export function clampSpringDisplacement(managers, maxRadians, fringeRadians = undefined) {
   if (!Number.isFinite(maxRadians) || maxRadians < 0) return;
   for (const manager of managers) {
     for (const joint of manager.joints ?? []) {
       const bone = joint.bone;
       const rest = bone?.userData?.narrativeSpringRest;
       if (!rest || !bone.quaternion) continue;
-      if (pullQuaternion(bone, rest, maxRadians)) plantSpringJoint(joint);
+      const cap = bone.userData?.narrativeFringe && Number.isFinite(fringeRadians)
+        ? Math.min(maxRadians, fringeRadians)
+        : maxRadians;
+      if (pullQuaternion(bone, rest, cap)) plantSpringJoint(joint);
     }
   }
 }
@@ -150,9 +172,9 @@ function clampSpringStep(managers, maxStepRadians) {
   }
 }
 
-function constrainSprings(managers, maxRadians, maxStepRadians) {
+function constrainSprings(managers, maxRadians, maxStepRadians, fringeRadians) {
   if (Number.isFinite(maxStepRadians)) clampSpringStep(managers, maxStepRadians);
-  if (Number.isFinite(maxRadians)) clampSpringDisplacement(managers, maxRadians);
+  if (Number.isFinite(maxRadians)) clampSpringDisplacement(managers, maxRadians, fringeRadians);
   if (Number.isFinite(maxStepRadians)) {
     for (const manager of managers) {
       for (const joint of manager.joints ?? []) {
@@ -166,7 +188,7 @@ function constrainSprings(managers, maxRadians, maxStepRadians) {
 }
 
 export function replaySprings(managers, frame, windowFrames, delta, applyFrame, {
-  settleFrames = SPRING_SETTLE_FRAMES, maxRadians, maxStepRadians,
+  settleFrames = SPRING_SETTLE_FRAMES, maxRadians, maxStepRadians, fringeRadians,
 } = {}) {
   const start = Math.max(0, frame - windowFrames + 1);
   const settle = Math.max(0, settleFrames);
@@ -176,7 +198,7 @@ export function replaySprings(managers, frame, windowFrames, delta, applyFrame, 
   if (limited) captureRest(managers);
   const integrate = () => {
     for (const manager of managers) manager.update(delta);
-    if (limited) constrainSprings(managers, maxRadians, maxStepRadians);
+    if (limited) constrainSprings(managers, maxRadians, maxStepRadians, fringeRadians);
   };
   if (settle > 0) {
     applyFrame(start);

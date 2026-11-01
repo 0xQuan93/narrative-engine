@@ -3,7 +3,7 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {VRMLoaderPlugin, VRMUtils} from '@pixiv/three-vrm';
 import {compileEpisode, resolveEnvironment} from '../episode.mjs';
 import {practicalGain} from '../music.mjs';
-import {replaySprings, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from './spring-window.mjs';
+import {replaySprings, SPRING_FRINGE_MAX_DEGREES, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from './spring-window.mjs';
 import {axesForVrm, poseForVrm} from '../vrm-pose.mjs';
 import {stableDrawOrder} from './draw-order.mjs';
 import {MOUTH_SHAPES} from '../dialogue.mjs';
@@ -325,6 +325,8 @@ export async function createStage({canvas, width, height, episode, assets, asset
       scene.updateMatrixWorld(true);
       const maxDegrees = episode.secondary?.springMaxDegrees ?? SPRING_MAX_DEGREES;
       const maxStep = episode.secondary?.springMaxStepDegrees ?? SPRING_MAX_STEP_DEGREES;
+      const fringeDegrees = episode.secondary?.springFringeDegrees
+        ?? (maxDegrees <= SPRING_MAX_DEGREES ? SPRING_FRINGE_MAX_DEGREES : maxDegrees);
       replaySprings(managers, frame, windowFrames, 1 / episode.fps, (cursor) => {
         const sample = cursor === frame ? state : evaluateFrame(cursor);
         boneEyes = poseActors(sample);
@@ -333,6 +335,7 @@ export async function createStage({canvas, width, height, episode, assets, asset
         settleFrames: episode.secondary?.springSettleFrames ?? SPRING_SETTLE_FRAMES,
         maxRadians: maxDegrees * Math.PI / 180,
         maxStepRadians: maxStep > 0 ? maxStep * Math.PI / 180 : Infinity,
+        fringeRadians: fringeDegrees * Math.PI / 180,
       });
     } else {
       boneEyes = poseActors(state);

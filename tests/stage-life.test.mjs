@@ -11,7 +11,7 @@ import {EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode} from '../src/ep
 import {estimateHeadPosition, pitchCamera} from '../src/camera-follow.mjs';
 import {kickCues, labelSections, practicalGain} from '../src/music.mjs';
 import {actorHeadPosition, eulerYXZ, limitRoll, quatYXZ} from '../src/reactive-motion.mjs';
-import {replaySprings, SPRING_DRAG, SPRING_GRAVITY_FLOOR, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
+import {isFringeSpringJoint, replaySprings, SPRING_DRAG, SPRING_FRINGE_MAX_DEGREES, SPRING_GRAVITY_FLOOR, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -384,6 +384,64 @@ test('spring response keeps a low-drag strand from staying lifted', () => {
   assert.equal(validateEpisode(episode((value) => {
     value.secondary = {springWindowFrames: 24, springGravity: 1, springDrag: 0.2, springStiffness: 1, springMaxDegrees: 40};
   })).secondary.springMaxDegrees, 40);
+});
+
+test('fringe joints skip the gravity floor and use a tighter cone', () => {
+  assert.equal(isFringeSpringJoint({bone: {name: 'J_Sec_hair_front'}, child: {position: {x: 0, y: -0.2, z: 0}}}), true);
+  assert.equal(isFringeSpringJoint({bone: {name: 'side'}, child: {position: {x: 0.08, y: -0.35, z: 0.02}}}), false);
+  assert.equal(isFringeSpringJoint({bone: {name: 'strand'}, child: {position: {x: 0.01, y: -0.02, z: 0.08}}}), true);
+  const rig = (name, tail) => {
+    const rootBone = new THREE.Group();
+    const head = new THREE.Object3D();
+    const hair = new THREE.Object3D();
+    hair.name = name;
+    const tip = new THREE.Object3D();
+    tip.position.set(tail[0], tail[1], tail[2]);
+    hair.add(tip);
+    head.add(hair);
+    rootBone.add(head);
+    rootBone.updateMatrixWorld(true);
+    const joint = new VRMSpringBoneJoint(hair, tip, {
+      stiffness: 0.02, dragForce: 0.02, gravityPower: 0.2, gravityDir: new THREE.Vector3(0, -1, 0), hitRadius: 0,
+    }, []);
+    const manager = new VRMSpringBoneManager();
+    manager.addJoint(joint);
+    manager.setInitState();
+    return {rootBone, head, hair, joint, manager};
+  };
+  const bang = rig('bang', [0, -0.2, 0.01]);
+  const side = rig('side', [0.2, -0.3, 0]);
+  tuneSpringManager(bang.manager, {});
+  tuneSpringManager(side.manager, {});
+  close(bang.joint.settings.gravityPower, 0.2);
+  assert.ok(side.joint.settings.gravityPower >= SPRING_GRAVITY_FLOOR);
+  assert.ok(bang.joint.settings.dragForce >= SPRING_DRAG);
+  assert.ok(side.joint.settings.dragForce >= SPRING_DRAG);
+  const swing = (bundle) => {
+    bundle.head.rotation.set(0, 0, 0);
+    bundle.rootBone.updateMatrixWorld(true);
+    bundle.manager.reset();
+    const rest = bundle.hair.quaternion.clone();
+    replaySprings([bundle.manager], 48, 20, 1 / 30, (frame) => {
+      bundle.head.rotation.x = Math.sin(frame / 2) * 1.1;
+      bundle.head.rotation.z = Math.sin(frame / 3) * 1.3;
+      bundle.rootBone.updateMatrixWorld(true);
+    }, {
+      settleFrames: 24,
+      maxRadians: SPRING_MAX_DEGREES * Math.PI / 180,
+      maxStepRadians: SPRING_MAX_STEP_DEGREES * Math.PI / 180,
+      fringeRadians: SPRING_FRINGE_MAX_DEGREES * Math.PI / 180,
+    });
+    return rest.angleTo(bundle.hair.quaternion);
+  };
+  const bangLift = swing(bang);
+  const sideLift = swing(side);
+  assert.ok(bangLift <= SPRING_FRINGE_MAX_DEGREES * Math.PI / 180 + 1e-3, `fringe ${bangLift}`);
+  assert.ok(sideLift <= SPRING_MAX_DEGREES * Math.PI / 180 + 1e-3, `side ${sideLift}`);
+  assert.ok(sideLift > bangLift, `side ${sideLift} fringe ${bangLift}`);
+  assert.throws(() => validateEpisode(episode((value) => {
+    value.secondary = {springWindowFrames: 24, springFringeDegrees: 40};
+  })), /springFringeDegrees/);
 });
 
 test('pitchDegrees lifts the lens after follow and stays off unless asked', () => {
