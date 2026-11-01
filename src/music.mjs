@@ -567,15 +567,15 @@ export function labelSections(bars) {
   };
   const quietEnd = runs.length ? runs[0][0] : clean.length;
   if (quietEnd > 0) push(0, 'groove', average(clean.slice(0, quietEnd).map((bar) => bar.energy)) || 0.6);
-  const peakOnset = clean.reduce((peak, bar) => Math.max(peak, bar.onset), 0);
   for (let index = 0; index < runs.length; index += 1) {
     const [from, to] = runs[index];
     const previousEnergy = from > 0 ? clean[from - 1].energy : clean[from].energy;
     const previousOnset = from > 0 ? clean[from - 1].onset : 0;
     const jump = clean[from].energy - previousEnergy;
     const onsetJump = clean[from].onset - previousOnset;
-    const spiked = jump >= 0.28 && onsetJump >= 0.35 && clean[from].onset >= Math.max(0.01, peakOnset) * 0.75;
-    const label = index === 0 ? (spiked ? 'drop' : 'hook') : (jump >= 0.15 ? 'drop' : 'hook');
+    // A drop is a sharp hit. A modest rise (about 0.06–0.2), including one
+    // whose onset only ticks up, stays a hook so a chorus is not a surprise blip.
+    const label = jump >= 0.25 && onsetJump >= 0.45 ? 'drop' : 'hook';
     push(clean[from].frame, label, average(clean.slice(from, to).map((bar) => bar.energy)));
   }
   if (runs.length) {

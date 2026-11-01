@@ -192,10 +192,18 @@ export function validateEpisode(episode) {
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
   if (own(episode, 'secondary')) {
-    object(episode.secondary, 'episode.secondary', ['springWindowFrames', 'springSettleFrames'], ['springWindowFrames']);
+    object(episode.secondary, 'episode.secondary', [
+      'springWindowFrames', 'springSettleFrames', 'springGravity', 'springDrag', 'springStiffness', 'springMaxDegrees',
+    ], ['springWindowFrames']);
     number(episode.secondary.springWindowFrames, 'episode.secondary.springWindowFrames', 4, 48, true);
     if (own(episode.secondary, 'springSettleFrames')) {
       number(episode.secondary.springSettleFrames, 'episode.secondary.springSettleFrames', 0, 48, true);
+    }
+    if (own(episode.secondary, 'springGravity')) number(episode.secondary.springGravity, 'episode.secondary.springGravity', 0, 4);
+    if (own(episode.secondary, 'springDrag')) number(episode.secondary.springDrag, 'episode.secondary.springDrag', 0, 0.95);
+    if (own(episode.secondary, 'springStiffness')) number(episode.secondary.springStiffness, 'episode.secondary.springStiffness', 0, 4);
+    if (own(episode.secondary, 'springMaxDegrees')) {
+      number(episode.secondary.springMaxDegrees, 'episode.secondary.springMaxDegrees', 0, 90);
     }
   }
   number(episode.fps, 'episode.fps', 1, 240, true);

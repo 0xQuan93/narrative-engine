@@ -10,8 +10,8 @@ import {VRMSpringBoneJoint, VRMSpringBoneManager} from '@pixiv/three-vrm-springb
 import {EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode} from '../src/episode.mjs';
 import {estimateHeadPosition} from '../src/camera-follow.mjs';
 import {kickCues, labelSections, practicalGain} from '../src/music.mjs';
-import {actorHeadPosition, quatYXZ} from '../src/reactive-motion.mjs';
-import {replaySprings, SPRING_SETTLE_FRAMES} from '../src/render/spring-window.mjs';
+import {actorHeadPosition, eulerYXZ, limitRoll, quatYXZ} from '../src/reactive-motion.mjs';
+import {replaySprings, SPRING_DRAG, SPRING_GRAVITY_FLOOR, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -130,6 +130,23 @@ test('bar energy labels a hook, a drop, and an outro without a hand-placed secti
   ]);
   assert.equal(drop[0].label, 'groove');
   assert.deepEqual(drop[1], {frame: 160, label: 'drop', energy: 0.79});
+  const modest = labelSections([
+    {frame: 0, energy: 0.5, onset: 0.3},
+    {frame: 30, energy: 0.52, onset: 0.3},
+    {frame: 60, energy: 0.51, onset: 0.3},
+    {frame: 90, energy: 0.62, onset: 0.7},
+    {frame: 120, energy: 0.64, onset: 0.55},
+    {frame: 150, energy: 0.63, onset: 0.4},
+  ]);
+  assert.equal(modest[1].label, 'hook');
+  const borderline = labelSections([
+    {frame: 0, energy: 0.4, onset: 0.2},
+    {frame: 30, energy: 0.41, onset: 0.2},
+    {frame: 60, energy: 0.71, onset: 0.6},
+    {frame: 90, energy: 0.73, onset: 0.4},
+    {frame: 120, energy: 0.72, onset: 0.35},
+  ]);
+  assert.equal(borderline[1].label, 'hook');
   assert.deepEqual(labelSections(rise.slice(0, 3)), [{frame: 0, label: 'groove', energy: 0.35}]);
   assert.deepEqual(labelSections([
     {frame: 0, energy: 0.5, onset: 0.2},
@@ -291,4 +308,125 @@ test('settling the window-start pose removes the rest-to-pose hair kick', () => 
   const warmAngle = settled.angleTo(warm);
   assert.ok(coldAngle > 0.4, `cold kick ${coldAngle}`);
   assert.ok(warmAngle < coldAngle * 0.45, `warm ${warmAngle} cold ${coldAngle}`);
+});
+
+test('spring response keeps a low-drag strand from staying lifted', () => {
+  const rig = (settings) => {
+    const rootBone = new THREE.Group();
+    const head = new THREE.Object3D();
+    const hair = new THREE.Object3D();
+    const tail = new THREE.Object3D();
+    tail.position.set(0.08, -0.35, 0.02);
+    hair.add(tail);
+    head.add(hair);
+    rootBone.add(head);
+    rootBone.updateMatrixWorld(true);
+    const joint = new VRMSpringBoneJoint(hair, tail, {
+      stiffness: 0.02,
+      dragForce: 0.02,
+      gravityPower: 0,
+      gravityDir: new THREE.Vector3(0, -1, 0),
+      hitRadius: 0,
+      ...settings,
+    }, []);
+    const manager = new VRMSpringBoneManager();
+    manager.addJoint(joint);
+    manager.setInitState();
+    return {rootBone, head, hair, joint, manager};
+  };
+  const tuned = rig();
+  tuneSpringManager(tuned.manager, {});
+  assert.ok(tuned.joint.settings.dragForce >= SPRING_DRAG);
+  assert.ok(tuned.joint.settings.gravityPower >= SPRING_GRAVITY_FLOOR);
+  const dragOnce = tuned.joint.settings.dragForce;
+  const gravityOnce = tuned.joint.settings.gravityPower;
+  tuneSpringManager(tuned.manager, {});
+  assert.equal(tuned.joint.settings.dragForce, dragOnce);
+  assert.equal(tuned.joint.settings.gravityPower, gravityOnce);
+  const rawSettings = rig();
+  tuneSpringManager(rawSettings.manager, {springGravity: 1, springDrag: 0, springStiffness: 1});
+  close(rawSettings.joint.settings.gravityPower, 0);
+  close(rawSettings.joint.settings.dragForce, 0.02);
+  close(rawSettings.joint.settings.stiffness, 0.02);
+  const nod = (bundle, frame) => {
+    bundle.head.rotation.x = Math.sin(frame / 2) * 1.1;
+    bundle.head.rotation.z = Math.sin(frame / 3) * 1.3;
+    bundle.rootBone.updateMatrixWorld(true);
+  };
+  const swing = (bundle, options) => {
+    bundle.head.rotation.set(0, 0, 0);
+    bundle.rootBone.updateMatrixWorld(true);
+    bundle.manager.reset();
+    const rest = bundle.hair.quaternion.clone();
+    replaySprings([bundle.manager], 48, 20, 1 / 30, (frame) => nod(bundle, frame), options);
+    return rest.angleTo(bundle.hair.quaternion);
+  };
+  const lifted = swing(rig(), {settleFrames: 24});
+  const tunedOnly = rig();
+  tuneSpringManager(tunedOnly.manager, {});
+  const softened = swing(tunedOnly, {settleFrames: 24});
+  const heldBundle = rig();
+  tuneSpringManager(heldBundle.manager, {});
+  const held = swing(heldBundle, {settleFrames: 24, maxRadians: 32 * Math.PI / 180});
+  const again = swing(heldBundle, {settleFrames: 24, maxRadians: 32 * Math.PI / 180});
+  assert.ok(lifted > 32 * Math.PI / 180, `untuned lift ${lifted}`);
+  assert.ok(softened < lifted, `tuned ${softened} raw ${lifted}`);
+  assert.ok(held <= 32 * Math.PI / 180 + 1e-3, `clamped lift ${held}`);
+  close(again, held, 1e-4);
+  assert.throws(() => validateEpisode(episode((value) => {
+    value.secondary = {springWindowFrames: 24, springMaxDegrees: 120};
+  })), /springMaxDegrees/);
+  assert.equal(validateEpisode(episode((value) => {
+    value.secondary = {springWindowFrames: 24, springGravity: 1, springDrag: 0.2, springStiffness: 1, springMaxDegrees: 40};
+  })).secondary.springMaxDegrees, 40);
+});
+
+test('a close-up can tame idle head roll without changing the next shot', () => {
+  const roll = quatYXZ(0.15, -0.2, 0.5);
+  const read = eulerYXZ(roll);
+  const flat = eulerYXZ(limitRoll(roll, {scale: 0}));
+  close(flat.roll, 0, 1e-5);
+  close(flat.yaw, read.yaw, 1e-5);
+  close(flat.pitch, read.pitch, 1e-5);
+  const capped = eulerYXZ(limitRoll(roll, {maxRadians: 4 * Math.PI / 180}));
+  close(Math.abs(capped.roll), 4 * Math.PI / 180, 1e-4);
+  const spine = quatYXZ(0, 0, 0.35);
+  const sequence = {duration: 1, keyframes: [
+    {time: 0, pose: {head: {rotation: roll}, spine: {rotation: spine}}, easing: 'step'},
+    {time: 1, pose: {head: {rotation: roll}, spine: {rotation: spine}}},
+  ]};
+  const value = episode((draft) => {
+    draft.durationFrames = 60;
+    draft.shots[0].durationFrames = 30;
+    draft.shots[0].performances[0].sequence = sequence;
+    draft.shots[0].performances[0].reactivity = {
+      look: 'off', head: 0, torso: 0, arm: 0, expression: 0, autoBeats: false,
+      roll: {scale: 0.2, maxDegrees: 4},
+    };
+    draft.shots.push({
+      id: 'medium', startFrame: 30, durationFrames: 30,
+      camera: draft.shots[0].camera,
+      performances: [{
+        actorId: 'a',
+        sequence,
+        reactivity: {look: 'off', head: 0, torso: 0, arm: 0, expression: 0, autoBeats: false},
+      }],
+    });
+  });
+  const closeUp = evaluateEpisodeAtFrame(value, 10).actors[0].pose;
+  const medium = evaluateEpisodeAtFrame(value, 40).actors[0].pose;
+  const closeHead = eulerYXZ(closeUp.head.rotation);
+  const mediumHead = eulerYXZ(medium.head.rotation);
+  close(Math.abs(closeHead.roll), 4 * Math.PI / 180, 1e-3);
+  close(closeHead.pitch, read.pitch, 1e-3);
+  close(closeHead.yaw, read.yaw, 1e-3);
+  close(mediumHead.roll, read.roll, 1e-3);
+  close(eulerYXZ(medium.spine.rotation).roll, 0.35, 1e-3);
+  assert.ok(Math.abs(eulerYXZ(closeUp.spine.rotation).roll) < Math.abs(eulerYXZ(medium.spine.rotation).roll));
+  assert.throws(() => validateEpisode(episode((draft) => {
+    draft.shots[0].performances[0].reactivity.roll = {scale: 2};
+  })), /roll.scale/);
+  assert.throws(() => validateEpisode(episode((draft) => {
+    draft.shots[0].performances[0].reactivity.roll = {};
+  })), /expected scale or maxDegrees/);
 });

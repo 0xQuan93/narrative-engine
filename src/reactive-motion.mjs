@@ -106,6 +106,61 @@ function quatFromAxisAngle(axis, angle) {
 }
 
 /** YXZ euler, matching VRMLookAt: x = pitch, y = yaw, z = roll. */
+export function eulerYXZ(rotation) {
+  const [x, y, z, w] = normalizeQuat(rotation);
+  const x2 = x + x;
+  const y2 = y + y;
+  const z2 = z + z;
+  const xx = x * x2;
+  const xy = x * y2;
+  const xz = x * z2;
+  const yy = y * y2;
+  const yz = y * z2;
+  const zz = z * z2;
+  const wx = w * x2;
+  const wy = w * y2;
+  const wz = w * z2;
+  const m23 = yz - wx;
+  const pitch = Math.asin(Math.max(-1, Math.min(1, -m23)));
+  if (Math.abs(m23) < 0.9999999) {
+    return {
+      yaw: Math.atan2(xz + wy, 1 - (xx + yy)),
+      pitch,
+      roll: Math.atan2(xy + wz, 1 - (xx + zz)),
+    };
+  }
+  return {
+    yaw: Math.atan2(-(xz - wy), 1 - (yy + zz)),
+    pitch,
+    roll: 0,
+  };
+}
+
+const ROLL_BONES = ['hips', 'spine', 'chest', 'upperChest', 'neck', 'head'];
+
+/** Scale, then cap, the Z twist of one YXZ rotation. Yaw and pitch stay. */
+export function limitRoll(rotation, {scale = 1, maxRadians = Infinity} = {}) {
+  const {yaw, pitch, roll} = eulerYXZ(rotation);
+  let next = roll * scale;
+  if (Number.isFinite(maxRadians)) next = Math.max(-maxRadians, Math.min(maxRadians, next));
+  if (Math.abs(next - roll) < 1e-7) return [...rotation];
+  return quatYXZ(yaw, pitch, next);
+}
+
+/** Shot-level idle/reactivity roll. Other shots omit `roll` and stay unchanged. */
+export function limitPoseRoll(pose, roll = {}) {
+  const scale = roll.scale ?? 1;
+  const maxRadians = roll.maxDegrees == null ? Infinity : roll.maxDegrees * Math.PI / 180;
+  for (const bone of ROLL_BONES) {
+    const rotation = pose[bone]?.rotation;
+    if (!rotation) continue;
+    const next = limitRoll(rotation, {scale, maxRadians});
+    if (next === rotation || next.every((value, index) => value === rotation[index])) continue;
+    pose[bone] = {...pose[bone], rotation: next};
+  }
+}
+
+/** YXZ euler, matching VRMLookAt: x = pitch, y = yaw, z = roll. */
 export function quatYXZ(yaw, pitch, roll = 0) {
   const c1 = Math.cos(pitch / 2);
   const c2 = Math.cos(yaw / 2);
@@ -683,6 +738,7 @@ export function applyReactivity(input) {
   }
 
   const nodLevel = clamp01(Math.max(levels.nod, groove?.head ?? 0));
+  if (reactivity.roll) limitPoseRoll(outPose, reactivity.roll);
   return {
     pose: outPose,
     expressions: outExpressions,
@@ -772,7 +828,7 @@ function timedList(value, path, shotStart, shotEnd, fields, required) {
 export function validateReactivity(value, path, {shotDuration, episodeDuration}) {
   plainObject(value, path, [
     'look', 'interest', 'head', 'torso', 'arm', 'expression', 'autoBeats', 'armDelayFrames', 'beats', 'intensityCues',
-    'groove', 'eyes', 'body', 'face',
+    'groove', 'eyes', 'body', 'face', 'roll',
   ], ['look']);
   if (!LOOKS.has(value.look)) fail(`${path}.look`, 'unsupported look mode');
   if (value.look === 'interest') {
@@ -789,5 +845,11 @@ export function validateReactivity(value, path, {shotDuration, episodeDuration})
     timedList(value.intensityCues, `${path}.intensityCues`, 0, shotDuration, ['frame', 'intensity', 'duration'], ['frame', 'intensity']);
   }
   validateLifeBlocks(value, path, shotDuration);
+  if (own(value, 'roll')) {
+    plainObject(value.roll, `${path}.roll`, ['scale', 'maxDegrees'], []);
+    if (!own(value.roll, 'scale') && !own(value.roll, 'maxDegrees')) fail(`${path}.roll`, 'expected scale or maxDegrees');
+    if (own(value.roll, 'scale')) finite(value.roll.scale, `${path}.roll.scale`, 0, 1);
+    if (own(value.roll, 'maxDegrees')) finite(value.roll.maxDegrees, `${path}.roll.maxDegrees`, 0, 30);
+  }
   return value;
 }
