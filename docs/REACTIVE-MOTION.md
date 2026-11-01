@@ -71,7 +71,7 @@ Evaluated actors gain a `motion` summary (`intensity`, `lookYaw`, `lookPitch`, `
 
 - **Look.** Yaw and pitch, clamped, are shared across spine, chest, upper chest, neck, and head. Head and neck take a smaller share than the torso chain, and that share is capped, so a nod or a PoseLab head key does not stack on top of the look. While the look is active the clip's head and neck rotations fade toward rest before the look offset is applied. `lookLeft` / `lookRight` / `lookUp` / `lookDown` weights are still written for expression look-at. On a bone look-at avatar the stage ignores those weights and writes `leftEye` / `rightEye` from the file's range map (`lookYaw` / `lookPitch` in radians, positive yaw toward +X, positive pitch looking down). `vrm.lookAt.update()` is not called.
 - **Aim.** On `point` beats the aim direction is chest-local: torso yaw already used for the look is removed, the direction is lifted slightly, then clamped to a 32° cone around +Z so a wide lens does not swing the hand to the floor or out to the side. A 12-step CCD solves a canonical right arm (rest `-X`, lengths 0.27 and 0.24) to about 96% of full reach, so the elbow stays slightly soft and the hand points along the forearm. At draw time the stage measures `rightLowerArm` and `rightHand` rest offsets and solves again, then blends onto the clip. The wrist rolls to lift the thumb, the index stays nearly straight, and the other fingers curl into the palm. Bones the avatar does not have are skipped. Lively's arm gain arrives in that cone. Subtle stays a small blend. The left arm gets a small counter roll. Preset numbers are unchanged.
-- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. Nods add `happy`, points and camera punches add `surprised`, leans add `relaxed`, unless `face.mood` is `sections` or `intensity` (see [Music close-ups](#music-close-ups)). Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner.
+- **Mouth and face.** With `expression` above 0, vowel cues ease toward a sine peak, neighboring cues bleed across gaps of at most three frames, and sentence ends blink. On a speech take, nods add `happy`, points and camera punches add `surprised`, and leans add `relaxed`. A `face` block turns that gesture layer off (see [Music close-ups](#music-close-ups)), so a point beat or a punch does not fight section mood. Weights stay in 0–1 and add to any authored track. Camera punch uses the change in distance and field of view from the previous frame of the same shot, plus handheld strength. Caption onsets are the speech cue. `intensityCues` can stand in for an external audio aligner. A point does not paint the face when `arm` is 0, because the arm is not driving the gesture.
 
 Optional presets the avatar does not define are skipped (`happy`, `blink`, `lookLeft`, and the other names in `OPTIONAL_REACTIVE_EXPRESSIONS`). Names are matched case-insensitively, and VRM 0 file presets alias to VRM 1 (`joy`/`happy`, `fun`/`relaxed`, `sorrow`/`sad`, `a`/`aa`, and the rest of the table in `src/expression-names.mjs`). A custom `Surprised` group matches `surprised`. `inspectVrm` keeps the file spellings on `expressions` and adds `canonicalExpressions` from the same table. Mouth shapes required by the script, and any expression named in an authored track, still have to exist after that lookup.
 
@@ -129,6 +129,8 @@ Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They a
 
 `sections` follows `music.sections`, fading over 20 frames: groove holds a low `relaxed`, hook raises `happy` to about 0.25, drop adds a `surprised` blip under 8 frames and then `happy`, outro holds `relaxed`. Weights stay under 0.5 so they do not trip blink suppression. `intensity` uses a slow attack and release on `intensityCues` instead of a spike per cue. Both modes **stop the per-nod `happy` pulse**. `mood: "off"` keeps that pulse, which is what older episodes still do.
 
+`gestures` defaults to false whenever a `face` block is present. That is the music-cut setting: section mood keeps working, and a point beat, a camera punch, or an idle arm does not add `surprised`, `happy`, or `relaxed`. Set `face.gestures` to true only when a spoken point should show on the face. `reactivity.gestureFace` (0–1) overrides that boolean. `arm: 0` still does not paint the point, because the gesture is not driving the arm. Speech takes that omit `face` keep the old nod / point / lean face.
+
 Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on the exhale). Downbeats stronger than 0.8 add a short exhale, still under 0.2 combined. Nothing is added on a frame that already has a dialogue mouth cue, and nothing is added on every kick. The avatar needs an `oh` or `aa` preset (VRM 0 `o` / `a` alias). Those names are not optional: a face block on a rig without them fails at draw time, same as a script vowel the rig cannot play.
 
 ### Camera follow
@@ -141,15 +143,39 @@ Idle mouth writes a small `oh` / `aa` (default peak near 0.03, a little more on 
 
 `target` is `head`. The evaluator estimates the head from the normalized pose (hips through head) and shifts the camera position and target by that delta, `lagFrames` earlier (0–12, default 3). Look still aims at the authored lens, so the eyes do not chase the lag. `amount` is 0–1. `margin` (0–0.5 m, default 0) pulls the camera back along the view and adds the same distance to depth-of-field focus, which is the hook extreme close-up fix when idle lean plus handheld walks the face off the frame. A starting point for that shot is lag 4, amount 0.75, margin 0.12. The shift is capped at 0.45 m. Follow does not look across a cut.
 
-The tilt on that close-up is the idle clip and the head chain, not `groove.roll`. Set `reactivity.roll` on that shot only: `scale` (0–1) multiplies roll on hips, spine, chest, upper chest, neck, and head, and `maxDegrees` (0–30) caps what remains. Yaw and pitch, including `reactivity.head`, stay. A shot that omits `roll` keeps its full idle energy, so a medium shot beside the close-up does not change. `{ "scale": 0.25, "maxDegrees": 4 }` is a level ECU. `groove.roll` still only adds the bar-count lean.
+The tilt on that close-up is the idle clip and the head chain, not `groove.roll`. Set `reactivity.roll` on that shot only: `scale` (0–1) multiplies roll on hips, spine, chest, upper chest, neck, and head, and `maxDegrees` (0–30) caps what remains. Yaw and pitch, including `reactivity.head`, stay. A shot that omits `roll` keeps its full idle energy, so a medium shot beside the close-up does not change. `groove.roll` still only adds the bar-count lean.
+
+Hook ECU recipe, on that shot only:
+
+```json
+"camera": {
+  "follow": {"target": "head", "lagFrames": 4, "amount": 0.75, "margin": 0.12}
+},
+"reactivity": {
+  "roll": {"scale": 0.25, "maxDegrees": 4},
+  "face": {"mood": "sections", "gestures": false, "idleMouth": 0.03}
+}
+```
+
+`gestures: false` is already the default when `face` is present. Leave `roll` off the medium shots.
 
 ### Hair
 
 `episode.secondary = {"springWindowFrames": 24}` (4–48) asks the stage to reset VRM spring bones and replay that many evaluated poses ending on the current frame. Before those poses it holds the window-start pose for `springSettleFrames` steps (default 24, range 0–48) so the jump from rest does not still ring in a short window. The same frame is the same hair. Omit `secondary` and springs stay at the imported rest.
 
-Music nods still leave thin, low-drag strands lifted after that settle, because the joint's own drag and gravity keep the nod. While `secondary` is on, each joint is tuned once: gravity is multiplied by `springGravity` (default 1.8) and raised to at least 0.35, drag is raised to `springDrag` (default 0.55), stiffness is multiplied by `springStiffness` (default 1.25) and raised to at least 0.12, and the local rotation is kept within `springMaxDegrees` of the bind pose (default 32, range 0–90). Set `springGravity` to 1, `springDrag` to 0, `springStiffness` to 1, and `springMaxDegrees` to 90 to keep the avatar's authored spring settings. An explicit gravity or stiffness value is only a multiplier; the floors apply when those fields are omitted.
+While `secondary` is on, each joint is tuned once so a music nod does not leave a thin accent standing or flicked out:
 
-`springWindowFrames` 24 with that default settle is the usual setting. If a strand still flicks, raise the window to 32–48 so more of the actual nod is inside it; settle 0 is the old rest kick. The window still forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
+- `springGravity` multiplies gravity (default 2.8) and, when the field is omitted, raises it to at least 1.4
+- `springDrag` is a drag floor (default 0.82)
+- `springStiffness` multiplies stiffness (default 1.6) and, when omitted, raises it to at least 0.4, which pulls the strand back toward its bind axis
+- `springMaxDegrees` caps local rotation from the bind pose (default 12, range 0–90)
+- `springMaxStepDegrees` caps how far one simulation step may rotate (default 8, range 0–45). 0 turns that cap off
+
+The cap is measured from the bind pose, and a clamped joint's velocity is cleared so the next step does not spring back out. Set `springGravity` to 1, `springDrag` to 0, `springStiffness` to 1, `springMaxDegrees` to 90, and `springMaxStepDegrees` to 45 to keep the avatar's authored springs. An explicit gravity or stiffness value is only a multiplier; the floors apply when those fields are omitted.
+
+If a tuft is upright with springs off, the VRM authored that bone upright. These controls hold the bind pose and hang low-drag strands. They do not restyle an accent whose rest pose already stands up.
+
+`springWindowFrames` 24 with the default settle is the usual setting. A wider window (32–48) includes more of the nod; settle 0 is the old rest kick. The window still forgets motion older than itself. There is no avatar in CI, so the seek test uses a synthetic joint, not a pixel render.
 
 ### Scenery
 
@@ -161,7 +187,7 @@ Music nods still leave thin, low-drag strands lifted after that settle, because 
 
 ### Camera, for authors
 
-This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. On the hook close-up, set `camera.follow` so idle lean and handheld do not walk the face out of frame. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
+This pass does not add a cut planner or a new Script Studio camera. For a music close-up, keep the lens mostly still: head-and-shoulders around 22–28° FOV for the groove, 18–22° for a few bars of the hook, and a wider frame on a drop. Cut on a downbeat, or one frame before it, at a phrase boundary (every 2–8 bars), and change angle by at least 30° between cuts. On the hook close-up, set `camera.follow` and `reactivity.roll` to `{ "scale": 0.25, "maxDegrees": 4 }`, and leave `face.gestures` off so section mood is the only face. Decide the close-ups before adding moves. Depth of field, when you want it, stays on the eyes via `depth-studio`.
 
 ### What is still out of reach
 

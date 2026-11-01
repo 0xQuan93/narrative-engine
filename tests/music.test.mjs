@@ -370,3 +370,65 @@ test('import-beats merges a beats file onto an episode and refuses to invent aud
   assert.notEqual(audio.status, 0);
   assert.match(`${audio.stderr}`, /librosa|python|audio/i);
 });
+
+test('a point does not paint surprised when the arm is unused or a music face owns the expression', () => {
+  const beats = [{frame: 8, kind: 'point', strength: 1, duration: 16}];
+  const at = (reactivity, extra) => evaluateEpisodeAtFrame(restEpisode((episode) => {
+    episode.music = {
+      bpm: 120,
+      beats: [{frame: 0, strength: 0.5, downbeat: true}],
+      sections: [{frame: 0, label: 'groove', energy: 0.62}],
+    };
+    extra?.(episode);
+    episode.shots[0].performances[0].reactivity = reactivity;
+  }, 40), 16).actors[0];
+  const idleArm = at({look: 'off', head: 0, torso: 0.4, arm: 0, expression: 1, autoBeats: false, beats});
+  assert.equal(idleArm.expressions.surprised ?? 0, 0);
+  assert.equal(idleArm.motion.aim, undefined);
+  const armed = at({look: 'off', head: 0, torso: 0.4, arm: 0.6, expression: 1, autoBeats: false, beats});
+  assert.ok((armed.expressions.surprised ?? 0) > 0.2, armed.expressions.surprised);
+  assert.ok(armed.motion.aim.weight > 0);
+  const music = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 0.8, autoBeats: false, beats,
+    face: {mood: 'sections', idleMouth: 0, breathMouth: false},
+  });
+  assert.equal(music.expressions.surprised ?? 0, 0);
+  assert.ok((music.expressions.relaxed ?? 0) > 0.05, music.expressions.relaxed);
+  const opted = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 0.8, autoBeats: false, beats,
+    face: {mood: 'sections', idleMouth: 0, breathMouth: false, gestures: true},
+  });
+  assert.ok((opted.expressions.surprised ?? 0) > 0.2, opted.expressions.surprised);
+  assert.ok((opted.expressions.relaxed ?? 0) > 0.05);
+  const scaledOff = at({
+    look: 'off', head: 0, torso: 0, arm: 0.6, expression: 1, autoBeats: false, beats, gestureFace: 0,
+  });
+  assert.equal(scaledOff.expressions.surprised ?? 0, 0);
+  const punched = at({
+    look: 'off', head: 0, torso: 0, arm: 0, expression: 1, autoBeats: false,
+    face: {mood: 'off', idleMouth: 0, breathMouth: false},
+  }, (episode) => {
+    episode.shots[0].camera.motion = [
+      {frame: 0, position: [0, 1.5, 2.4], target: [0, 1.5, 0], fov: 28, easing: 'step'},
+      {frame: 16, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+      {frame: 40, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+    ];
+  });
+  assert.equal(punched.expressions.surprised ?? 0, 0);
+  const speechPunch = at({
+    look: 'off', head: 0, torso: 0, arm: 0, expression: 1, autoBeats: false,
+  }, (episode) => {
+    episode.shots[0].camera.motion = [
+      {frame: 0, position: [0, 1.5, 2.4], target: [0, 1.5, 0], fov: 28, easing: 'step'},
+      {frame: 16, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+      {frame: 40, position: [0, 1.5, 1.5], target: [0, 1.5, 0], fov: 18},
+    ];
+  });
+  assert.ok((speechPunch.expressions.surprised ?? 0) > 0.2, speechPunch.expressions.surprised);
+  assert.throws(() => validateEpisode(restEpisode((episode) => {
+    episode.shots[0].performances[0].reactivity.face = {gestures: 'no'};
+  })), /gestures/);
+  assert.throws(() => validateEpisode(restEpisode((episode) => {
+    episode.shots[0].performances[0].reactivity.gestureFace = 2;
+  })), /gestureFace/);
+});

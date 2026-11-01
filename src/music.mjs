@@ -717,10 +717,11 @@ export function validateLifeBlocks(value, path, shotDuration) {
   if (own(value, 'face')) {
     const face = value.face;
     const item = `${path}.face`;
-    plainObject(face, item, ['idleMouth', 'breathMouth', 'mood'], []);
+    plainObject(face, item, ['idleMouth', 'breathMouth', 'mood', 'gestures'], []);
     if (own(face, 'idleMouth')) finite(face.idleMouth, `${item}.idleMouth`, 0, 0.1);
     if (own(face, 'breathMouth')) bool(face.breathMouth, `${item}.breathMouth`);
     if (own(face, 'mood') && !MOOD_MODES.includes(face.mood)) fail(`${item}.mood`, 'unsupported mood');
+    if (own(face, 'gestures')) bool(face.gestures, `${item}.gestures`);
   }
 }
 
