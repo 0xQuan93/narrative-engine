@@ -1,0 +1,12 @@
+[
+  {"frame": 0, "energy": 0.68, "onset": 0.4},
+  {"frame": 48, "energy": 0.7, "onset": 0.42},
+  {"frame": 96, "energy": 0.69, "onset": 0.4},
+  {"frame": 144, "energy": 0.71, "onset": 0.41},
+  {"frame": 192, "energy": 0.7, "onset": 0.4},
+  {"frame": 240, "energy": 0.69, "onset": 0.39},
+  {"frame": 288, "energy": 0.84, "onset": 0.45},
+  {"frame": 336, "energy": 0.86, "onset": 0.46},
+  {"frame": 384, "energy": 0.85, "onset": 0.44},
+  {"frame": 432, "energy": 0.83, "onset": 0.43}
+]

@@ -192,8 +192,11 @@ export function validateEpisode(episode) {
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
   if (own(episode, 'secondary')) {
-    object(episode.secondary, 'episode.secondary', ['springWindowFrames'], ['springWindowFrames']);
+    object(episode.secondary, 'episode.secondary', ['springWindowFrames', 'springSettleFrames'], ['springWindowFrames']);
     number(episode.secondary.springWindowFrames, 'episode.secondary.springWindowFrames', 4, 48, true);
+    if (own(episode.secondary, 'springSettleFrames')) {
+      number(episode.secondary.springSettleFrames, 'episode.secondary.springSettleFrames', 0, 48, true);
+    }
   }
   number(episode.fps, 'episode.fps', 1, 240, true);
   number(episode.durationFrames, 'episode.durationFrames', 1, Number.MAX_SAFE_INTEGER, true);

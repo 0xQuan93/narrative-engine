@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdtempSync, writeFileSync} from 'node:fs';
+import {mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -11,7 +11,7 @@ import {EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode} from '../src/ep
 import {estimateHeadPosition} from '../src/camera-follow.mjs';
 import {kickCues, labelSections, practicalGain} from '../src/music.mjs';
 import {actorHeadPosition, quatYXZ} from '../src/reactive-motion.mjs';
-import {replaySprings} from '../src/render/spring-window.mjs';
+import {replaySprings, SPRING_SETTLE_FRAMES} from '../src/render/spring-window.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const close = (a, b, tolerance = 1e-6) => assert.ok(Math.abs(a - b) < tolerance, `${a} != ${b}`);
@@ -105,6 +105,12 @@ test('night-roof, light pulse, and spring window stay opt-in and validated', () 
   assert.throws(() => validateEpisode(episode((value) => { value.environment = 'neon-room'; })), /environment/);
   assert.throws(() => validateEpisode(episode((value) => { value.environment = {base: 'studio', lightPulse: 2}; })), /lightPulse/);
   assert.throws(() => validateEpisode(episode((value) => { value.secondary = {springWindowFrames: 2}; })), /springWindowFrames/);
+  assert.throws(() => validateEpisode(episode((value) => {
+    value.secondary = {springWindowFrames: 24, springSettleFrames: 64};
+  })), /springSettleFrames/);
+  assert.doesNotThrow(() => validateEpisode(episode((value) => {
+    value.secondary = {springWindowFrames: 32, springSettleFrames: 0};
+  })));
 });
 
 test('bar energy labels a hook, a drop, and an outro without a hand-placed section', () => {
@@ -157,6 +163,19 @@ test('bar energy labels a hook, a drop, and an outro without a hand-placed secti
   ], {encoding: 'utf8'});
   assert.equal(python.status, 0, python.stderr);
   assert.deepEqual(JSON.parse(python.stdout), labelSections(rise));
+  const flatRise = JSON.parse(readFileSync(new URL('./fixtures/flat-rise-bars.json', import.meta.url), 'utf8'));
+  const flatSections = labelSections(flatRise);
+  assert.equal(flatSections[0].label, 'groove');
+  assert.ok(flatSections[0].energy < 0.75, flatSections[0].energy);
+  assert.deepEqual(flatSections[1], {frame: 288, label: 'hook', energy: 0.845});
+  const flat = flatRise.map((bar, index) => ({...bar, energy: 0.7 + (index % 2 ? 0.01 : -0.01), onset: 0.4}));
+  assert.deepEqual(labelSections(flat), [{frame: 0, label: 'groove', energy: 0.7}]);
+  const flatPython = spawnSync('python3', [
+    path.join(root, 'scripts/extract-beats.py'), '--label-sections',
+    fileURLToPath(new URL('./fixtures/flat-rise-bars.json', import.meta.url)),
+  ], {encoding: 'utf8'});
+  assert.equal(flatPython.status, 0, flatPython.stderr);
+  assert.deepEqual(JSON.parse(flatPython.stdout), flatSections);
 });
 
 test('music intensity cues feed section-less mood and do not change a cue-free take', () => {
@@ -234,4 +253,42 @@ test('a fixed spring window is seek-stable and depends on more than the current 
   const brief = read();
   const moved = long.some((value, index) => Math.abs(value - brief[index]) > 1e-3);
   assert.ok(moved, 'window length should change the sprung pose');
+  assert.equal(SPRING_SETTLE_FRAMES, 24);
+});
+
+test('settling the window-start pose removes the rest-to-pose hair kick', () => {
+  const poseSpring = (settleFrames) => {
+    const rootBone = new THREE.Group();
+    const head = new THREE.Object3D();
+    const hair = new THREE.Object3D();
+    const tail = new THREE.Object3D();
+    tail.position.set(0.04, -0.2, 0);
+    hair.add(tail);
+    head.add(hair);
+    rootBone.add(head);
+    rootBone.updateMatrixWorld(true);
+    const joint = new VRMSpringBoneJoint(hair, tail, {
+      stiffness: 0.25,
+      dragForce: 0.08,
+      gravityPower: 0,
+      gravityDir: new THREE.Vector3(0, -1, 0),
+      hitRadius: 0,
+    }, []);
+    const manager = new VRMSpringBoneManager();
+    manager.addJoint(joint);
+    manager.setInitState();
+    const apply = () => {
+      head.rotation.z = 1.1;
+      rootBone.updateMatrixWorld(true);
+    };
+    replaySprings([manager], 30, 6, 1 / 30, apply, {settleFrames});
+    return hair.quaternion.clone();
+  };
+  const settled = poseSpring(80);
+  const cold = poseSpring(0);
+  const warm = poseSpring(SPRING_SETTLE_FRAMES);
+  const coldAngle = settled.angleTo(cold);
+  const warmAngle = settled.angleTo(warm);
+  assert.ok(coldAngle > 0.4, `cold kick ${coldAngle}`);
+  assert.ok(warmAngle < coldAngle * 0.45, `warm ${warmAngle} cold ${coldAngle}`);
 });

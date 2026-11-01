@@ -501,9 +501,10 @@ function average(values) {
 /**
  * Label groove / hook / drop / outro from per-bar energy and onset.
  * `bars` are `{frame, energy, onset}` in episode frames, one bar each.
- * Fewer than four bars stays a single groove. A sustained rise is a hook.
- * A sharp onset jump is a drop. A quiet tail of at least two bars is an outro.
- * The same rules are ported in scripts/extract-beats.py.
+ * Fewer than four bars stays a single groove. A sustained rise above the
+ * earlier bars is a hook, including a loud slice whose absolute level is
+ * already high. A sharp onset jump is a drop. A quiet tail of at least two
+ * bars is an outro. The same rules are ported in scripts/extract-beats.py.
  */
 export function labelSections(bars) {
   const clean = (Array.isArray(bars) ? bars : []).map((bar) => ({
@@ -526,16 +527,38 @@ export function labelSections(bars) {
   const highCut = Math.max(median * 1.18, sorted[Math.floor(sorted.length * 0.7)] ?? 1);
   const floor = median + 0.08;
   const high = smooth.map((value) => value >= highCut && value >= floor);
-  const runs = [];
-  let start = -1;
-  for (let index = 0; index <= high.length; index += 1) {
-    if (index < high.length && high[index]) {
-      if (start < 0) start = index;
-    } else if (start >= 0) {
-      if (index - start >= 2) runs.push([start, index]);
-      start = -1;
+  // A loud, nearly flat slice (energy around 0.7) never clears a percentile
+  // cut that includes the hook. Compare each bar with the mean of the bars
+  // before it so a sustained step still reads as a section.
+  const relative = clean.map((bar, index) => {
+    if (index < 2 || index + 1 >= clean.length) return false;
+    const baseline = average(clean.slice(0, index).map((item) => item.energy));
+    return bar.energy >= baseline + 0.06 && clean[index + 1].energy >= baseline + 0.05;
+  });
+  const runsOf = (flags) => {
+    const found = [];
+    let start = -1;
+    for (let index = 0; index <= flags.length; index += 1) {
+      if (index < flags.length && flags[index]) {
+        if (start < 0) start = index;
+      } else if (start >= 0) {
+        if (index - start >= 2) found.push([start, index]);
+        start = -1;
+      }
     }
-  }
+    return found;
+  };
+  const mergeRuns = (runs) => {
+    const sorted = [...runs].sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+    const merged = [];
+    for (const run of sorted) {
+      const last = merged.at(-1);
+      if (!last || run[0] > last[1]) merged.push([run[0], run[1]]);
+      else last[1] = Math.max(last[1], run[1]);
+    }
+    return merged;
+  };
+  const runs = mergeRuns([...runsOf(high), ...runsOf(relative)]);
   const sections = [];
   const push = (frame, label, energy) => {
     const previous = sections.at(-1);
