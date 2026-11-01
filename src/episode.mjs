@@ -14,14 +14,14 @@
  * top of the clip. Omit it and the pose matches the clip alone.
  * Optional episode.music plus reactivity groove/eyes/body/face add musical
  * life. Episodes that omit those blocks do not enter that path.
- * Optional camera.follow, episode.secondary, and night-roof / lightPulse
- * are also off unless those fields are set.
+ * Optional camera.follow, camera.pitchDegrees, episode.secondary, and
+ * night-roof / lightPulse are also off unless those fields are set.
  */
 
 import {validateDialogue, evaluateDialogueAtFrame} from './dialogue.mjs';
 import {validateReactivity, applyReactivity} from './reactive-motion.mjs';
 import {validateMusic} from './music.mjs';
-import {applyCameraFollow, estimateHeadPosition} from './camera-follow.mjs';
+import {applyCameraFollow, estimateHeadPosition, pitchCamera} from './camera-follow.mjs';
 
 export const EPISODE_SCHEMA = 'narrative-episode/0.1';
 export const ENVIRONMENTS = Object.freeze(['studio', 'depth-studio', 'night-roof']);
@@ -208,8 +208,9 @@ function validateEnvironment(value, path) {
 
 /** Validate the complete supported schema; returns its unchanged input. */
 export function validateEpisode(episode) {
-  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary'],
+  object(episode, 'episode', ['schema', 'fps', 'durationFrames', 'actors', 'shots', 'dialogue', 'environment', 'music', 'secondary', 'pitchDegrees'],
     ['schema', 'fps', 'durationFrames', 'actors', 'shots']);
+  if (own(episode, 'pitchDegrees')) number(episode.pitchDegrees, 'episode.pitchDegrees', -12, 12);
   if (episode.schema !== EPISODE_SCHEMA) fail('episode.schema', `expected ${EPISODE_SCHEMA}`);
   if (own(episode, 'environment')) validateEnvironment(episode.environment, 'episode.environment');
   if (own(episode, 'secondary')) {
@@ -260,7 +261,8 @@ export function validateEpisode(episode) {
     if (shot.startFrame !== expectedStart) fail(`${path}.startFrame`, 'shots must be ordered and contiguous (no gaps or overlaps)');
     expectedStart += shot.durationFrames;
     if (expectedStart > episode.durationFrames) fail(path, 'shot exceeds episode duration');
-    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld', 'follow']);
+    cameraPose(shot.camera, `${path}.camera`, ['position', 'target', 'fov', 'motion', 'depthOfField', 'handheld', 'follow', 'pitchDegrees']);
+    if (own(shot.camera, 'pitchDegrees')) number(shot.camera.pitchDegrees, `${path}.camera.pitchDegrees`, -12, 12);
     if (own(shot.camera, 'follow')) {
       const follow = shot.camera.follow;
       const fp = `${path}.camera.follow`;
@@ -649,6 +651,8 @@ function evaluateValidated(episode, frame) {
       });
     }
   }
+  const pitchDegrees = own(shot.camera, 'pitchDegrees') ? shot.camera.pitchDegrees : (episode.pitchDegrees ?? 0);
+  if (pitchDegrees) camera = pitchCamera(camera, pitchDegrees);
   return {
     schema: EPISODE_SCHEMA,
     frame,

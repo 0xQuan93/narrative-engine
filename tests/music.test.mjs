@@ -182,6 +182,28 @@ test('saccades offset the eyes and leave the head pose on the look', () => {
   const home = evaluateEpisodeAtFrame(away, 10).actors[0];
   assert.ok(gazed.motion.eyeYaw - gazed.motion.lookYaw > 0.15);
   assert.deepEqual(gazed.pose.head, home.pose.head);
+  const turning = restEpisode((value) => {
+    value.shots[0].performances[0].reactivity = {
+      ...base, eyes: {saccade: 0, seed: 1, gazeAway: [{frame: 4, duration: 48, yaw: 0.3, pitch: 0}]},
+    };
+  });
+  let peak = 0;
+  let arrived = 0;
+  for (let frame = 4; frame < 40; frame += 1) {
+    const prev = evaluateEpisodeAtFrame(turning, frame - 1).actors[0];
+    const curr = evaluateEpisodeAtFrame(turning, frame).actors[0];
+    const step = Math.abs(curr.motion.eyeYaw - prev.motion.eyeYaw) * 180 / Math.PI;
+    peak = Math.max(peak, step);
+    arrived = Math.max(arrived, curr.motion.eyeYaw - curr.motion.lookYaw);
+    assert.deepEqual(curr.pose.head, prev.pose.head);
+  }
+  assert.ok(peak < 2.4, `gaze step ${peak}`);
+  assert.ok(peak > 0.5, `gaze never turned ${peak}`);
+  assert.ok(arrived > 0.27, `gaze arrived ${arrived}`);
+  const frames = [8, 16, 28, 36];
+  const ordered = frames.map((frame) => evaluateEpisodeAtFrame(turning, frame));
+  assert.deepEqual(evaluateEpisodeAtFrame(turning, 28), ordered[2]);
+  assert.deepEqual(evaluateEpisodeAtFrame(turning, 8), ordered[0]);
 });
 
 test('section mood does not pulse happy on each nod', () => {
@@ -235,6 +257,17 @@ test('half-time groove nods land on the beat, lead with the neck, and alternate 
   const early = rollOf(evaluateEpisodeAtFrame(rolled, 8).actors[0].pose.head.rotation);
   const late = rollOf(evaluateEpisodeAtFrame(rolled, 60).actors[0].pose.head.rotation);
   assert.ok(early * late < 0, `roll ${early} ${late}`);
+  assert.ok(Math.abs(early) > 0.01 && Math.abs(late) > 0.01);
+  const rolledEval = compileEpisode(rolled);
+  for (const beat of [47, 95, 142]) {
+    const before = rolledEval(beat - 1).actors[0].pose;
+    const at = rolledEval(beat).actors[0].pose;
+    const chestStep = Math.abs(rollOf(at.chest.rotation) - rollOf(before.chest.rotation)) * 180 / Math.PI;
+    const spineStep = Math.abs(rollOf(at.spine.rotation) - rollOf(before.spine.rotation)) * 180 / Math.PI;
+    assert.ok(chestStep < 1.5, `chest step ${chestStep} at ${beat}`);
+    assert.ok(spineStep < 0.8, `spine step ${spineStep} at ${beat}`);
+    assert.ok(Math.abs(rollOf(at.chest.rotation)) < 1e-6, `downbeat chest ${rollOf(at.chest.rotation)}`);
+  }
   const sequential = Array.from({length: 30}, (_, frame) => evaluate(frame));
   for (const frame of [29, 4, 18, 0, 11]) assert.deepEqual(evaluate(frame), sequential[frame]);
 });

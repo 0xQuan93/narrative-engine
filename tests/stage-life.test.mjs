@@ -8,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import * as THREE from 'three';
 import {VRMSpringBoneJoint, VRMSpringBoneManager} from '@pixiv/three-vrm-springbone';
 import {EPISODE_SCHEMA, evaluateEpisodeAtFrame, validateEpisode} from '../src/episode.mjs';
-import {estimateHeadPosition} from '../src/camera-follow.mjs';
+import {estimateHeadPosition, pitchCamera} from '../src/camera-follow.mjs';
 import {kickCues, labelSections, practicalGain} from '../src/music.mjs';
 import {actorHeadPosition, eulerYXZ, limitRoll, quatYXZ} from '../src/reactive-motion.mjs';
 import {replaySprings, SPRING_DRAG, SPRING_GRAVITY_FLOOR, SPRING_MAX_DEGREES, SPRING_MAX_STEP_DEGREES, SPRING_SETTLE_FRAMES, tuneSpringManager} from '../src/render/spring-window.mjs';
@@ -384,6 +384,46 @@ test('spring response keeps a low-drag strand from staying lifted', () => {
   assert.equal(validateEpisode(episode((value) => {
     value.secondary = {springWindowFrames: 24, springGravity: 1, springDrag: 0.2, springStiffness: 1, springMaxDegrees: 40};
   })).secondary.springMaxDegrees, 40);
+});
+
+test('pitchDegrees lifts the lens after follow and stays off unless asked', () => {
+  const plain = episode();
+  const held = evaluateEpisodeAtFrame(plain, 21);
+  const lifted = episode((value) => {
+    value.pitchDegrees = 4;
+    value.shots[0].camera.follow = {target: 'head', lagFrames: 6, amount: 1, margin: 0};
+    value.shots[0].performances[0].reactivity.roll = {scale: 0.25, maxDegrees: 4};
+  });
+  const shot = evaluateEpisodeAtFrame(lifted, 21);
+  const followedOnly = episode((value) => {
+    value.shots[0].camera.follow = {target: 'head', lagFrames: 6, amount: 1, margin: 0};
+    value.shots[0].performances[0].reactivity.roll = {scale: 0.25, maxDegrees: 4};
+  });
+  const followed = evaluateEpisodeAtFrame(followedOnly, 21);
+  assert.deepEqual(shot.actors[0].pose, followed.actors[0].pose);
+  assert.deepEqual(shot.actors[0].motion.lookYaw, followed.actors[0].motion.lookYaw);
+  assert.ok(Math.abs(followed.camera.target[0] - held.camera.target[0]) > 0.01);
+  close(shot.camera.target[0], followed.camera.target[0], 1e-6);
+  assert.ok(shot.camera.position[1] < followed.camera.position[1] - 0.02, `camera y ${shot.camera.position[1]}`);
+  const distance = (camera) => Math.hypot(
+    camera.position[0] - camera.target[0],
+    camera.position[1] - camera.target[1],
+    camera.position[2] - camera.target[2],
+  );
+  close(distance(shot.camera), distance(followed.camera), 1e-6);
+  const flat = episode((value) => {
+    value.pitchDegrees = 4;
+    value.shots[0].camera.pitchDegrees = 0;
+  });
+  assert.deepEqual(evaluateEpisodeAtFrame(flat, 21).camera, held.camera);
+  const direct = pitchCamera({position: [0, 1.5, 2], target: [0, 1.5, 0], fov: 20}, 6);
+  assert.ok(direct.position[1] < 1.5);
+  close(direct.target[1], 1.5);
+  assert.throws(() => validateEpisode(episode((value) => { value.pitchDegrees = 20; })), /pitchDegrees/);
+  assert.throws(() => validateEpisode(episode((value) => { value.shots[0].camera.pitchDegrees = -13; })), /pitchDegrees/);
+  const sequential = [21, 4, 0].map((frame) => evaluateEpisodeAtFrame(lifted, frame));
+  assert.deepEqual(evaluateEpisodeAtFrame(lifted, 0), sequential[2]);
+  assert.deepEqual(evaluateEpisodeAtFrame(lifted, 21), sequential[0]);
 });
 
 test('a close-up can tame idle head roll without changing the next shot', () => {

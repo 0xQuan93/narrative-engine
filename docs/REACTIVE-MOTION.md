@@ -107,7 +107,7 @@ The mp3/wav path shells out to `scripts/extract-beats.py` (HPSS, percussive onse
 
 `{ "division": "half", "amount": 1, "phaseFrames": -1, "roll": 0.65, "seed": 1 }`. Division, amount, phase, roll, and seed can be omitted.
 
-Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° as `roll` goes from 0 to 1. On an extreme close-up, a lower `roll` (about 0.2–0.4) keeps that sway inside the frame; the default stays 0.65. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
+Nods use an asymmetric curve: the head lands on `beat + phaseFrames` (default one frame early), about 35% of the gap going down and the rest recovering, with a rebound past rest of about 14%. The neck reaches that bottom 2 frames earlier at 30 fps. The chest counters at about 20% of the head, one frame late. Shoulders take a 1° bounce. Roll alternates side each bar, from about 2° to 4° at mid-bar as `roll` goes from 0 to 1. It is a half-sine of the bar phase, so the lean is 0 on the downbeat and the slope matches into the next bar. A sign flip at the “1” is what used to pop the chest about 7° and the spine about 2.5° in a single frame. On an extreme close-up, a lower `roll` (about 0.2–0.4) keeps that sway inside the frame; the default stays 0.65. Downbeats are at least strength 0.85 before a seeded ±10% jitter. While `look` is `camera` or `interest`, the head nod stays within about 8°. With look off, the cap is about 12°.
 
 When `episode.music` has beats in the shot, those beats drive the groove and any explicit `beats` still add with the older symmetric pulse. Dialogue `autoBeats` are unchanged. With no music beats in the shot, groove reshapes nod-kind `beats` (default division `beat`, so a list you already thinned to half-time is not thinned again) and does not also play the sine. `intensityCues` scale those reshaped nods. They do not open the mouth on every hit.
 
@@ -117,7 +117,7 @@ When `episode.music` has beats in the shot, those beats drive the groove and any
 
 Intervals are log-normal from `hash(seed, index)`, not a metronome. At 30 fps the lid shuts in 2–3 frames, holds one frame, and opens over 5–7. About one blink in ten is a double, 6–10 frames later. About one in five leads with `blinkLeft` or `blinkRight` by one frame (skipped when the avatar has no such preset). A scheduled blink snaps to a cut, a section boundary, or the frame after a groove landing when one of those is within 8 frames. `happy` or `relaxed` above 0.5 suppresses the blink for that frame, which is the VRM `overrideBlink` case. A hard camera punch does too.
 
-Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They are added to `motion.eyeYaw` / `motion.eyePitch` for the eyes only. Head bones stay on `lookYaw` / `lookPitch`. Optional `gazeAway` cues are shot-local `{ frame, duration, yaw, pitch }` and also move only the eyes. Bone look-at avatars still pass those angles through the file’s range map, which is often only about 10° of output, so the iris travel stays small. A larger eye gain is not in this pass.
+Saccades are 2–5° steps over 2 frames, then a fixation of 0.5–2.5 s. They are added to `motion.eyeYaw` / `motion.eyePitch` for the eyes only. Head bones stay on `lookYaw` / `lookPitch`. Optional `gazeAway` cues are shot-local `{ frame, duration, yaw, pitch }` and also move only the eyes. The cue still reaches its yaw and pitch. Attack and release are a smoothstep, sized so the steepest frame of the turn stays near 2° instead of a 4-frame linear ramp (a 0.3 rad look-away used to step about 4.3° every frame). Bone look-at avatars still pass those angles through the file’s range map, which is often only about 10° of output, so the iris travel stays small. A larger eye gain is not in this pass.
 
 ### `reactivity.body`
 
@@ -158,6 +158,15 @@ Hook ECU recipe, on that shot only:
 ```
 
 `gestures: false` is already the default when `face` is present. Leave `roll` off the medium shots.
+
+Neutral Idle holds the head a little lower than Happy Idle, so on that close-up the fringe can sit across the eyes. `pitchDegrees` (-12 to 12) is an opt-in lens pitch-up. Set it on the shot camera, or once on the episode as the fallback for shots that omit it. Positive degrees orbit the camera down around the target after `follow`, so the lens looks up under the fringe. The target and the distance stay put. The pose is unchanged, so `follow` lag, amount, and margin still apply, and `reactivity.roll` still caps the same twist. A shot that sets `pitchDegrees` to 0 keeps a flat lens even when the episode has a value. Omit both and existing cuts do not move. 4° is a starting point for the hook ECU:
+
+```json
+"camera": {
+  "follow": {"target": "head", "lagFrames": 4, "amount": 0.75, "margin": 0.12},
+  "pitchDegrees": 4
+}
+```
 
 ### Hair
 

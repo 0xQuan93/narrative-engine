@@ -220,8 +220,7 @@ export function sampleGroove({
   const chestPitch = chestSum * cap;
   const marks = downbeatMarks(musicHere ? musicBeats : [], 'bar');
   const fallback = source.length >= 2 ? Math.max(8, (source.at(-1).frame - source[0].frame) / source.length * 4) : Math.round(fps * 1.6);
-  const sign = barIndex(frame, marks, fallback) % 2 === 0 ? 1 : -1;
-  const roll = sign * (2 + 2 * rollGain) * DEG * (0.7 + 0.3 * clamp01(headUnit));
+  const roll = grooveRoll(frame, marks, fallback, rollGain, headUnit);
   const shoulderPitch = Math.max(0, headUnit) * MUSIC_LIFE.shoulderNodDegrees * DEG * amount;
   return {
     fromMusic: musicHere,
@@ -324,15 +323,41 @@ export function saccadeOffset(frame, fps, amount, seed) {
   return {yaw: prevYaw, pitch: prevPitch};
 }
 
+/** Half-sine per bar: 0 on each downbeat, opposite peaks mid-bar, slope matches across the bar. */
+function grooveRoll(frame, marks, fallback, rollGain, headUnit) {
+  const amp = (2 + 2 * rollGain) * DEG * (0.7 + 0.3 * clamp01(headUnit));
+  const phase = marks && marks.length >= 2 ? barPhase(frame, marks) : null;
+  if (phase == null) {
+    const span = Math.max(1, fallback);
+    return Math.sin(Math.PI * (frame / span)) * amp;
+  }
+  const sign = barIndex(frame, marks, fallback) % 2 === 0 ? 1 : -1;
+  return sign * Math.sin(Math.PI * Math.min(1, phase)) * amp;
+}
+
+function smooth01(t) {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+/**
+ * Look-away still reaches the cue. The edge is a smoothstep long enough that
+ * the steepest frame stays near 2°, instead of a 4-frame linear ramp.
+ */
 function gazeOffset(localFrame, cues) {
   let yaw = 0;
   let pitch = 0;
   for (const cue of cues ?? []) {
     if (localFrame < cue.frame || localFrame >= cue.frame + cue.duration) continue;
+    const travel = Math.hypot(cue.yaw, cue.pitch);
+    const half = Math.max(1, Math.floor((cue.duration - 1) / 2));
+    const wanted = Math.ceil((travel * 1.5) / (2 * DEG));
+    const attack = Math.min(half, Math.max(4, wanted));
+    const into = localFrame - cue.frame;
     const remain = cue.frame + cue.duration - 1 - localFrame;
-    const edge = Math.min(1, (localFrame - cue.frame) / 4, remain / 4, 1);
-    yaw += cue.yaw * Math.max(0, edge);
-    pitch += cue.pitch * Math.max(0, edge);
+    const edge = Math.min(smooth01(into / attack), smooth01(remain / attack));
+    yaw += cue.yaw * edge;
+    pitch += cue.pitch * edge;
   }
   return {yaw, pitch};
 }
