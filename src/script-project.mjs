@@ -1,4 +1,5 @@
 import { blendPoses, calmIdleSequence, compileEpisode, evaluateLoopingPose, IDLE_RESTART_SECONDS, LOOP_CROSSFADE_SECONDS, validateEpisode } from './episode.mjs';
+import { neutralIdleSequence } from './neutral-idle.mjs';
 import { compileDialogue } from './dialogue.mjs';
 import { compileCameraMoves } from './camera-language.mjs';
 import { reactivityPreset } from './reactive-motion.mjs';
@@ -7,7 +8,7 @@ export const DEFAULT_SCRIPT_SETTINGS = Object.freeze({
   text: 'Welcome to the studio. This is a short first take using your avatar and your motion clips.',
   wordsPerMinute: 150, mouthStrength: 0.7, motion: 'wave-idle', camera: 'cuts',
   format: 'landscape', revealWordIndex: null, shotCameras: [],
-  reactivity: 'off', reactivityAmount: 1, idleCalm: true,
+  reactivity: 'off', reactivityAmount: 1, idleCalm: true, idleClip: 'neutral', sourceVrm: '0',
 });
 export function validateScriptSettings(value) {
   const required = ['text', 'wordsPerMinute', 'mouthStrength', 'motion', 'camera'];
@@ -23,6 +24,8 @@ export function validateScriptSettings(value) {
   if (value.reactivity !== undefined && !['off', 'subtle', 'lively'].includes(value.reactivity)) throw new Error('Unsupported reactivity preset');
   if (value.reactivityAmount !== undefined && (!Number.isFinite(value.reactivityAmount) || value.reactivityAmount < 0 || value.reactivityAmount > 1)) throw new Error('Reactivity amount must be 0–1');
   if (value.idleCalm !== undefined && typeof value.idleCalm !== 'boolean') throw new Error('Idle calm must be true or false');
+  if (value.idleClip !== undefined && !['neutral', 'imported'].includes(value.idleClip)) throw new Error('Idle clip must be neutral or imported');
+  if (value.sourceVrm !== undefined && !['0', '1'].includes(value.sourceVrm)) throw new Error('sourceVrm must be 0 or 1');
   return { ...value, text: value.text.trim() };
 }
 
@@ -53,7 +56,9 @@ export function createScriptEpisode({ baseEpisode, wave, idle, settings, minimum
   const firstIdle = settings.motion === 'wave-idle' ? waveFrames : 0;
   const handoffFrames = Math.max(1, Math.round(IDLE_RESTART_SECONDS * fps));
   const heldWave = firstIdle > 0 ? sampleWave(firstIdle - 1).actors[0].pose : null;
-  const idleSource = settings.idleCalm === false ? idle : calmIdleSequence(idle, {fps});
+  const importedIdle = settings.idleClip === 'imported';
+  const idleBody = importedIdle ? idle : neutralIdleSequence(settings.sourceVrm ?? '0');
+  const idleSource = importedIdle && settings.idleCalm !== false ? calmIdleSequence(idleBody, {fps}) : idleBody;
   const idlePose = (frame) => evaluateLoopingPose(idleSource, Math.max(0, frame) / fps, LOOP_CROSSFADE_SECONDS);
   const sample = (frame) => {
     if (frame < firstIdle) return sampleWave(frame).actors[0].pose;

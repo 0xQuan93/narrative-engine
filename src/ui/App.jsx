@@ -44,7 +44,7 @@ export default function App() {
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const prepare = useCallback((data, next) => {
-    const built = createScriptEpisode({baseEpisode: data.baseEpisode, wave: data.wave, idle: data.idle, settings: next});
+    const built = createScriptEpisode({baseEpisode: data.baseEpisode, wave: data.wave, idle: data.idle, settings: {...next, sourceVrm: data.sourceVrm ?? next.sourceVrm ?? '0'}});
     const episode = built.episode ?? built;
     return {episode, captions: episode.dialogue?.captions ?? []};
   }, []);

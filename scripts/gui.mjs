@@ -55,7 +55,10 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
     if (error.code === 'ENOENT') throw new Error('Run npm run setup with your licensed VRM and two PoseLab motion JSON files before opening Script Studio');
     throw error;
   }
-  let saved = { ...DEFAULT_SCRIPT_SETTINGS }, active = null, latest = null;
+  let sourceVrm = '0';
+  try { sourceVrm = (await loadJson(path.join(root, 'out/setup/idle.sequence.source.json'))).sourceVrm ?? '0'; } catch {}
+  if (!['0', '1'].includes(sourceVrm)) sourceVrm = '0';
+  let saved = { ...DEFAULT_SCRIPT_SETTINGS, sourceVrm }, active = null, latest = null;
   try { saved = validateScriptSettings((await loadJson(draftPath)).settings); } catch {}
   let recovered = null;
   for (const id of (await readdir(studio)).filter((name) => ID.test(name))) {
@@ -109,7 +112,7 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
       if (![ `127.0.0.1:${expectedPort}`, `localhost:${expectedPort}` ].includes(host)) return json(res, 403, { error: 'Loopback host required' });
       if (req.method === 'POST' && req.headers.origin !== `http://${host}`) return json(res, 403, { error: 'Same-origin request required' });
       const url = new URL(req.url, `http://${host}`), route = url.pathname;
-      if (req.method === 'GET' && route === '/api/bootstrap') return json(res, 200, { baseEpisode, wave, idle, assets: lock.assets, settings: saved, latest: latest ? await jobResponse(latest.id) : null });
+      if (req.method === 'GET' && route === '/api/bootstrap') return json(res, 200, { baseEpisode, wave, idle, sourceVrm, assets: lock.assets, settings: saved, latest: latest ? await jobResponse(latest.id) : null });
       if (req.method === 'GET' && route === '/api/draft') return json(res, 200, { settings: saved });
       if (req.method === 'POST' && ['/api/save', '/api/render'].includes(route)) {
         if (active && !active.child) await jobResponse(active.id);
@@ -118,7 +121,7 @@ export async function createGuiServer({ root = DEFAULT_ROOT, buildUI = true, spa
         if (!body || Object.keys(body).length !== 1 || !Object.hasOwn(body, 'settings')) throw new Error('Expected {settings}');
         const settings = validateScriptSettings(body.settings);
         if (route === '/api/save') { await atomicJson(draftPath, { settings }); saved = settings; return json(res, 200, { settings }); }
-        const episode = createScriptEpisode({ baseEpisode, wave, idle, settings });
+        const episode = createScriptEpisode({ baseEpisode, wave, idle, settings: {...settings, sourceVrm} });
         if (active) return json(res, 409, { error: 'A render is already running', id: active.id });
         // Reserve before the first write so concurrent HTTP requests cannot start another job.
         const id = randomUUID(); active = { id, child: null }; const dir = path.join(studio, id);

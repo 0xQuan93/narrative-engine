@@ -4,7 +4,8 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { mapPoseLabTrack, samplePoseLabClip, importPoseLabFile } from '../src/poselab.mjs';
+import { mapPoseLabTrack, samplePoseLabClip } from '../src/poselab.mjs';
+import { importPoseLabFile } from '../src/poselab-import.mjs';
 import { evaluateEpisodeAtFrame } from '../src/episode.mjs';
 
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-6, `${a} != ${b}`);
